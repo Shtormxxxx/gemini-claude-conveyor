@@ -188,4 +188,15 @@ test('the source checkout only installs, and says how', () => {
   assert.match(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'help']).out, /init <project folder>/)
   const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'))
   assert.equal(sh(REPO, process.execPath, ['bin/conveyor.mjs', '--version']).out.trim(), pkg.version)
+
+  // init goes only to the top of a git repository.
+  const tmp = mkdtempSync(join(tmpdir(), 'conveyor-init-'))
+  try {
+    mkdirSync(join(tmp, 'repo', 'sub'), { recursive: true })
+    assert.match(lastLine(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', join(tmp, 'repo'), '--no-ecc']).out), /is not a git repository/)
+    git(join(tmp, 'repo'), 'init', '-q')
+    assert.match(lastLine(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', join(tmp, 'repo', 'sub'), '--no-ecc']).out), /is inside the repository/)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 })

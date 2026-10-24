@@ -206,10 +206,12 @@ function init(args) {
   if (INSTALLED) stop('this copy is already installed in a project; to update it, run init again from a fresh clone of the repository')
   const target = resolve(args.find(a => !a.startsWith('--')) || process.cwd())
   if (target === TOOL) stop('give the path to your project: node bin/conveyor.mjs init <project folder>')
-  const top = run('git', ['-C', target, 'rev-parse', '--show-toplevel'], { capture: true, cwd: target })
-  if (top.code !== 0) stop(`${target} is not a git repository — run "git init" there first (the conveyor needs git to see what changed)`)
-  const same = (a, b) => (WIN ? a.toLowerCase() === b.toLowerCase() : a === b)
-  if (!same(resolve(top.stdout.trim()), target)) stop(`${target} is inside the repository ${top.stdout.trim()}; run init on that folder`)
+  // Asked of git rather than compared as strings: Windows writes one folder several ways (C:\Users\RUNNER~1
+  // and C:/Users/runneradmin), and only git knows whether this is the top of the repository.
+  const where = run('git', ['rev-parse', '--show-prefix', '--show-toplevel'], { capture: true, cwd: target })
+  if (where.code !== 0) stop(`${target} is not a git repository — run "git init" there first (the conveyor needs git to see what changed)`)
+  const [prefix, top] = where.stdout.split('\n')
+  if (prefix.trim()) stop(`${target} is inside the repository ${top.trim()}; run init on that folder`)
 
   const dest = join(target, 'conveyor')
   const updating = existsSync(join(dest, 'conveyor.config.json'))

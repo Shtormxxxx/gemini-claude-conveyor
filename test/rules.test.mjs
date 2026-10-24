@@ -8,7 +8,7 @@ import {
   assignTabs, block, claudeChoice, compileRules, deployFor, fenceFor, fileMap, fill, fingerprint, firstMatch,
   ownerReasons, prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream,
   readCrewArg, readLimits, readPlan, readPrereview, readVerdict, recordSent, scanSecrets, section, slug,
-  tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails, weekPassed,
+  tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails, weekPace, weekPassed,
 } from '../lib/rules.mjs'
 
 test('paths are made relative to the project, and anything outside it is refused', () => {
@@ -311,11 +311,24 @@ test('the guard on Claude\'s limits: main model, economy model, or no step at al
   // A routine review, and every step from 50% of the five-hour limit, on the economy model.
   assert.deepEqual(claudeChoice(at(0.1, 0.1), now, claude, { routine: true }), { tier: 'economy', model: 'sonnet', effort: 'xhigh', why: 'a routine review (the plan says REVIEW: standard)' })
   assert.match(claudeChoice(at(0.5, 0.1), now, claude).why, /five-hour limit is at 50%; from 50% the economy model works/)
-  // The week is kept for later when it is spent faster than it passes: a seventh of it gone, so 14%
-  // plus 15 points may be spent before the economy model takes over.
+  // The week is kept for later when it is spent faster than an even pace: with no base, from the
+  // week's start — a seventh of it gone, so 14% plus 15 points may be spent first.
   assert.equal(tier(at(0.28, 0.28)), 'main')
-  assert.match(claudeChoice(at(0.1, 0.3), now, claude).why, /the week is 30% spent with 14% of it gone/)
+  assert.match(claudeChoice(at(0.1, 0.3), now, claude).why, /the week is 30% spent, ahead of an even pace \(14% by now\)/)
   assert.equal(claudeChoice(at(0.1, 0.9), now, { ...claude, weekAhead: null }).tier, 'main')
+  // From a base, what was spent before it stays as it is, whoever spent it, and what was left is spread
+  // over the rest of the week: 34% at the base, 66% left for six days, 11 a day.
+  const week = at(0, 0).week
+  const base = { resetsAt: week.resetsAt, used: 0.34, at: now }
+  assert.equal(tier(at(0.1, 0.34), { weekBase: base }), 'main')
+  assert.equal(tier(at(0.1, 0.49), { weekBase: base }), 'main')
+  assert.match(claudeChoice(at(0.1, 0.5), now, claude, { weekBase: base }).why, /the week is 50% spent, ahead of an even pace \(34% by now\)/)
+  const later = now + 24 * hour
+  assert.equal(Math.round(weekPace(week, later, base) * 100), 45)
+  assert.equal(claudeChoice(at(0.1, 0.6), later, claude, { weekBase: base }).tier, 'main')
+  assert.equal(claudeChoice(at(0.1, 0.61), later, claude, { weekBase: base }).tier, 'economy')
+  // A base from another week is not this week's.
+  assert.equal(weekPace(week, now, { ...base, resetsAt: week.resetsAt - 7 * 24 * hour }).toFixed(6), weekPassed(week.resetsAt, now).toFixed(6))
   // Near the top of either limit no step starts: it would be cut off halfway.
   assert.deepEqual(claudeChoice(at(0.95, 0.1), now, claude), { tier: 'stop', model: null, effort: null, why: 'the five-hour limit is at 95%', until: now + 2 * hour })
   assert.match(claudeChoice(at(0.1, 0.96), now, claude).why, /weekly limit is at 96%/)

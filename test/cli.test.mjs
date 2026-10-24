@@ -174,6 +174,9 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     assert.match(status.out, /next plan, deep review {3}opus \(high\)/)
     assert.match(status.out, /next routine review {6}sonnet \(xhigh\)/)
     assert.match(status.out, /last steps: .*planning opus 0%/)
+    // The week's pace counts from the conveyor's first reading of the week, or from now when told so.
+    assert.match(status.out, /week {13}20% \(resets [^)]+\); an even pace is at 20% now, counted from 20% at /)
+    assert.match(conveyor(['status', '--week-from-now']).out, /the week now counts from here: the 80% left is spread evenly until /)
 
     // Apply: a cut-off file is reported; protected paths are refused; a -fix answer settles it.
     const inbox = join(project, 'conveyor/run/inbox')

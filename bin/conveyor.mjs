@@ -29,10 +29,10 @@ import {
   assignTabs, block, claudeChoice, deployFor, fileMap, fill, fingerprint, firstMatch, ownerReasons,
   prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream, readCrewArg,
   readPlan, readPrereview, readVerdict, recordSent, scanEmails, scanSecrets, section, slug, tabLabel, tabPrompt,
-  tail, weekPassed, EMAIL,
+  tail, weekPace, EMAIL,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.5.0'
+const VERSION = '1.5.1'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = resolve(HERE, '..')
@@ -242,7 +242,14 @@ async function claudeLimits(maxAgeMs = 0) {
   ], 'Reply with the single word OK.', { cwd: tmpdir(), show: false })
   if (missing(res.code)) return { missing: true }
   const { limits } = readClaudeStream(res.out)
-  if (limits) saveUsage({ limits, limitsAt: new Date().toISOString() })
+  if (limits) {
+    // The first reading of a week is its base: what was spent before it stays as it is, and the rest
+    // is spread evenly over the days left (weekPace). status --week-from-now moves the base to now.
+    const base = kept.weekBase
+    const week = limits.week
+    const newWeek = week?.resetsAt && !(base && Math.abs(base.resetsAt - week.resetsAt) < 60 * 1000)
+    saveUsage({ limits, limitsAt: new Date().toISOString(), ...(newWeek ? { weekBase: { resetsAt: week.resetsAt, used: week.used, at: Date.now() } } : {}) })
+  }
   return limits
 }
 
@@ -261,7 +268,9 @@ async function claudeStep(config, name, instructions, { routine = false } = {}) 
   const usage = loadUsage()
   const before = await claudeLimits(0)
   if (before?.missing) stop(NOT_INSTALLED)
-  const choice = claudeChoice(before, Date.now(), config.claude, { routine, mainRefusedUntil: Date.parse(usage.mainRefusedUntil || 0) })
+  const choice = claudeChoice(before, Date.now(), config.claude, {
+    routine, mainRefusedUntil: Date.parse(usage.mainRefusedUntil || 0), weekBase: loadUsage().weekBase,
+  })
   if (choice.tier === 'stop') {
     stop(`Claude: ${choice.why}${choice.until ? `, until ${when(choice.until)}` : ''} — a step started now would be cut off halfway. Run this step again after that; tell the owner`)
   }
@@ -1122,22 +1131,29 @@ function accounts(args) {
 // ── status / abort ──────────────────────────────────────────────────────────────────────────────
 
 // Claude's limits as Claude Code reports them, the model the next steps get, and what the last steps
-// cost; then the quota guard's view of the tabs. --block <TAB> records that the owner saw the tab near
-// its 70–75% line (held for one window), --unblock lifts that, --reset forgets the tab's count.
+// cost; then the quota guard's view of the tabs. --week-from-now counts the week's pace from now: what
+// is left is spread over the days left, whoever spent the rest. --block <TAB> records that the owner
+// saw the tab near its 70–75% line (held for one window), --unblock lifts that, --reset forgets the
+// tab's count.
 async function status(args) {
   const { config, windowMs } = project()
-  const limits = await claudeLimits(60 * 1000)
+  const rebase = args.includes('--week-from-now')
+  const limits = await claudeLimits(rebase ? 0 : 60 * 1000)
+  if (rebase && limits?.week?.resetsAt) saveUsage({ weekBase: { resetsAt: limits.week.resetsAt, used: limits.week.used, at: Date.now() } })
   if (limits && !limits.missing) {
     const usage = loadUsage()
     const t = Date.now()
-    const pick = routine => claudeChoice(limits, t, config.claude, { routine, mainRefusedUntil: Date.parse(usage.mainRefusedUntil || 0) })
+    const pick = routine => claudeChoice(limits, t, config.claude, { routine, mainRefusedUntil: Date.parse(usage.mainRefusedUntil || 0), weekBase: usage.weekBase })
     const said = c => (c.tier === 'stop' ? `none — ${c.why}${c.until ? `, until ${when(c.until)}` : ''}` : `${c.model}${c.effort ? ` (${c.effort})` : ''} — ${c.why}`)
-    const gone = limits.week?.resetsAt ? `, ${pct(weekPassed(limits.week.resetsAt, t))} of the week gone` : ''
+    const pace = weekPace(limits.week, t, usage.weekBase)
+    const base = usage.weekBase && limits.week && Math.abs(usage.weekBase.resetsAt - limits.week.resetsAt) < 60 * 1000 ? usage.weekBase : null
+    const even = pace === null ? '' : `; an even pace is at ${pct(pace)} now${base ? `, counted from ${pct(base.used)} at ${when(base.at)}` : ''}`
     console.log(`Claude, as Claude Code reports it:
   five-hour limit  ${windowLine(limits.fiveHour)}
-  week             ${windowLine(limits.week)}${gone}
+  week             ${windowLine(limits.week)}${even}
   next plan, deep review   ${said(pick(false))}
   next routine review      ${said(pick(config.claude.reviewByRisk))}`)
+    if (rebase && base) console.log(`  the week now counts from here: the ${pct(1 - base.used)} left is spread evenly until ${when(limits.week.resetsAt)}`)
     const steps = (usage.steps || []).slice(-6)
     if (steps.length) console.log(`  last steps: ${steps.map(s => `${clock(Date.parse(s.at))} ${s.step.split(' ')[0]} ${s.model}${s.fiveHour !== null ? ` ${pct(s.fiveHour)}` : ''}`).join(' · ')}`)
     console.log('')

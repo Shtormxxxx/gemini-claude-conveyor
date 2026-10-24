@@ -39,8 +39,9 @@ What the program enforces, so no agent has to remember it:
 - Claude's own limits: before and after each plan and review the program reads the real five-hour and
   weekly use from Claude Code. The main model (`claude.model`) works while they allow; the economy
   model (`claude.economy`) takes routine reviews (the plan's `REVIEW: standard`), every step from
-  `claude.switchAt`% of the five-hour limit, and every step while the week is spent faster than it
-  passes; at `claude.stopAt`% no step starts. Claude's steps load only five tools — no MCP servers,
-  no skills. Never pass a model to the conveyor yourself.
+  `claude.switchAt`% of the five-hour limit, and every step while the week runs ahead of an even
+  pace — what was left at the conveyor's first reading of the week, spread over the days left
+  (`status --week-from-now` counts from now); at `claude.stopAt`% no step starts. Claude's steps
+  load only five tools — no MCP servers, no skills. Never pass a model to the conveyor yourself.
 
 Everything under `conveyor/run/` is run-time state and is not tracked by git.

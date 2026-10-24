@@ -22,7 +22,8 @@ What the program enforces, so no agent has to remember it:
 - Dependencies, CI, `.gitignore`, secrets files, the conveyor, the agents' rules, the paths the owner
   lists in the config, anything that looks like a credential, and very large runs ship only with the
   owner's word: `node conveyor/bin/conveyor.mjs ship --owner-ok`, which only the owner types.
-- Working accounts are named by email (`node conveyor/bin/conveyor.mjs accounts …`), never trusted by
+- Working accounts are named by email (`node conveyor/bin/conveyor.mjs accounts …`), kept in the
+  git-ignored `conveyor/accounts.local.json` — never write them into a tracked file — and never trusted by
   their /u/N/ position in Chrome, which shifts when accounts sign in or out. Before sending to a tab,
   the conductor checks the email in its account menu; a tab whose account is missing is blocked.
 - The crew: each run uses the first N working accounts, N chosen at the start (`plan --crew N`, one of

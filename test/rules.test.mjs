@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import {
   assignTabs, block, compileRules, deployFor, fenceFor, fill, fingerprint, firstMatch, ownerReasons,
   projectPath, quotaView, readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent,
-  scanSecrets, section, slug, tabPrompt, tail, positionOf, tabLabel, tabUrl,
+  scanSecrets, section, slug, tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails,
 } from '../lib/rules.mjs'
 
 test('paths are made relative to the project, and anything outside it is refused', () => {
@@ -131,6 +131,12 @@ test('the secret scan flags added lines that look like credentials, and masks th
   ])
   assert.ok(found.every(f => f.sample.endsWith('…') && f.sample.length <= 7))
   assert.deepEqual(scanSecrets('+++ b/x\n+hello'), [])
+})
+
+test('the working accounts\' emails are caught in added lines, masked', () => {
+  const diff = '+++ b/src/a.js\n+const who = "Work1@Gmail.com"\n-old work2@gmail.com\n+++ b/b.md\n+nothing here'
+  assert.deepEqual(scanEmails(diff, ['work1@gmail.com', 'work2@gmail.com']), [{ file: 'src/a.js', kind: 'a working account\'s email', sample: 'w…@gmail.com' }])
+  assert.deepEqual(scanEmails(diff, []), [])
 })
 
 test('the quota guard holds a tab back at its budget until the oldest request leaves the window', () => {

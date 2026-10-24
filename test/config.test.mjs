@@ -42,6 +42,15 @@ test('tabs are named by email or given a url; one account never backs two tabs',
   assert.match(text, /ARGON_6: give "account"/)
 })
 
+test('the local emails name the tabs in order, and must fit them', () => {
+  const { config, problems } = readConfig(JSON.stringify({ crews: [2], tabs: [{ id: 'ARGON_1' }, { id: 'ARGON_2', url: 'https://gemini.google.com/u/3/app' }] }), ['a@gmail.com'])
+  assert.deepEqual(problems, [])
+  assert.deepEqual(config.tabs.map(t => [t.account, t.url]), [['a@gmail.com', 'https://gemini.google.com/app?authuser=a%40gmail.com'], [undefined, 'https://gemini.google.com/u/3/app']])
+  assert.match(readConfig('', Array.from({ length: 9 }, (_, i) => `x${i}@gmail.com`)).problems.join(), /9 emails for 8 tabs/)
+  assert.match(readConfig('', ['not-an-email']).problems.join(), /accounts\.local\.json must hold/)
+  for (const path of ['conveyor/accounts.local.json', 'accounts.local.json']) assert.ok(firstMatch(guards(readConfig('').config).secrets, path), path)
+})
+
 test('crew sizes must fit the tabs, and a fixed crew must be one of them', () => {
   const tabs = Array.from({ length: 10 }, (_, i) => ({ id: `ARGON_${i + 1}`, url: `https://gemini.google.com/u/${i + 1}/app` }))
   assert.deepEqual(readConfig(JSON.stringify({ tabs, crews: [5, 10], crew: 10 })).problems, [])

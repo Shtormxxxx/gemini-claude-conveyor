@@ -25,11 +25,11 @@ import { fileURLToPath } from 'node:url'
 import { DEFAULTS, guards, readConfig } from '../lib/config.mjs'
 import {
   assignTabs, block, deployFor, fill, fingerprint, firstMatch, ownerReasons, projectPath, quotaView,
-  readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent, scanSecrets, section, slug,
+  readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent, scanEmails, scanSecrets, section, slug,
   tabLabel, tabPrompt, tail, EMAIL,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.3.0'
+const VERSION = '1.4.0'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = resolve(HERE, '..')
@@ -42,6 +42,7 @@ const OUT = join(RUN, 'out')
 const INBOX = join(RUN, 'inbox')
 const FILES = {
   config: join(TOOL, 'conveyor.config.json'),
+  accounts: join(TOOL, 'accounts.local.json'),
   task: join(RUN, 'TASK.md'),
   plan: join(RUN, 'CONVEYOR_PLAN.md'),
   review: join(RUN, 'FOR_REVIEW.md'),
@@ -113,11 +114,17 @@ const stop = (why, code = 1) => done(`STOP — ${why}`, code)
 
 function project() {
   if (!INSTALLED) stop(`run this inside a project the conveyor is installed in (${CMD} …). To install it: node bin/conveyor.mjs init <project folder>`)
-  const { config, problems } = readConfig(read(FILES.config))
+  const { config, problems } = readConfig(read(FILES.config), localAccounts())
   if (problems.length) stop(`conveyor/conveyor.config.json:\n${problems.map(p => `  - ${p}`).join('\n')}`)
   // CONVEYOR_MODEL picks Claude's model for one session without touching the config.
   if (process.env.CONVEYOR_MODEL) config.claude = { ...config.claude, model: process.env.CONVEYOR_MODEL }
   return { config, guard: guards(config), windowMs: config.quota.windowHours * 60 * 60 * 1000 }
+}
+
+// The working accounts' emails, in order, from the git-ignored conveyor/accounts.local.json.
+function localAccounts() {
+  const data = json(FILES.accounts, null)
+  return data === null ? [] : data.accounts
 }
 
 // Uncommitted, unignored changes. conveyor/run/ is ignored, so the run's own files never count.
@@ -225,6 +232,13 @@ function init(args) {
     // 1.0 shipped two Gemini tabs; a config still on exactly those gets the eight working accounts.
     const old = JSON.parse(read(configPath))
     const twoTabs = Array.isArray(old.tabs) && old.tabs.length === 2 && old.tabs.every((t, i) => t.id === `ARGON_${i + 1}` && t.url === `https://gemini.google.com/u/${i + 1}/app`)
+    // 1.2 kept the account emails in the config, which goes to git: they move to accounts.local.json.
+    if (Array.isArray(old.tabs) && old.tabs.some(t => t?.account) && !existsSync(join(dest, 'accounts.local.json'))) {
+      write(join(dest, 'accounts.local.json'), JSON.stringify({ accounts: old.tabs.map(t => t.account).filter(Boolean) }, null, 2) + '\n')
+      old.tabs = old.tabs.map(({ account, ...tab }) => tab)
+      write(configPath, JSON.stringify(old, null, 2) + '\n')
+      console.log('conveyor.config.json: the account emails moved to conveyor/accounts.local.json, which git ignores.\n')
+    }
     if (twoTabs && old.crews === undefined) {
       write(configPath, JSON.stringify({ ...old, tabs: DEFAULTS.tabs, crews: DEFAULTS.crews, crew: DEFAULTS.crew }, null, 2) + '\n')
       console.log('conveyor.config.json: the two Gemini tabs became eight working accounts, run with a crew of 4 or 8.\n')
@@ -243,6 +257,8 @@ function init(args) {
   if (!/^@AGENTS\.md\s*$/m.test(read(claude))) write(claude, upsert(read(claude), MARK, '@AGENTS.md'))
   const ignore = join(target, '.gitignore')
   write(ignore, upsert(read(ignore), IGNORE, `/conveyor/run/
+# The working accounts' emails stay on this machine; a published project shows none.
+/conveyor/accounts.local.json
 # ECC's rules, skills and workflows for Antigravity are installed on each machine by the conveyor
 # (its install state holds absolute paths); only the conveyor's own workflow belongs to the project.
 /.agents/*
@@ -293,6 +309,9 @@ function doctor() {
     else warn('could not tell whether Claude Code is signed in — run `claude` once in this folder to be sure')
   }
 
+  const rawTabs = json(FILES.config, {}).tabs || []
+  if (rawTabs.some(t => t?.account)) warn(`conveyor.config.json holds account emails, and it goes to git — run ${CMD} accounts <emails…> to move them to the git-ignored accounts.local.json`)
+  if (git('ls-files', 'conveyor/accounts.local.json').trim()) no('conveyor/accounts.local.json is tracked by git, so the emails would be published — git rm --cached conveyor/accounts.local.json')
   const byPosition = config.tabs.filter(t => !t.account)
   if (!byPosition.length) ok(`${config.tabs.length} working accounts, each named by its email`)
   else warn(`${byPosition.map(t => t.id).join(', ')} ${byPosition.length === 1 ? 'is' : 'are'} addressed by position (/u/N/), which shifts when an account signs in or out of Chrome — name them by email: ${CMD} accounts <email> <email> …`)
@@ -535,7 +554,7 @@ function runChecks(config) {
 function gates(config, guard, paths, diff) {
   return {
     owner: ownerReasons(paths, guard.ownerOnly),
-    secrets: scanSecrets(diff),
+    secrets: [...scanSecrets(diff), ...scanEmails(diff, config.tabs.map(t => t.account))],
     tooBig: paths.length > config.limits.maxChangedFiles,
   }
 }
@@ -694,9 +713,10 @@ function ship(args) {
 
 // ── accounts ────────────────────────────────────────────────────────────────────────────────────
 
-// The working accounts, by email and in order: ARGON_1 is the first email, and so on. Without
-// emails, lists the tabs as they are. Crews that no longer fit are dropped; if none fit, the crew is
-// all the accounts given.
+// The working accounts, by email and in order: ARGON_1 is the first email, and so on. The emails go
+// to conveyor/accounts.local.json, which git ignores, so a published project shows none; the config
+// keeps only the tabs. Without emails, lists the tabs as they are. Crews that no longer fit are
+// dropped; if none fit, the crew is all the accounts given.
 function accounts(args) {
   const { config } = project()
   if (!args.length) {
@@ -710,13 +730,17 @@ function accounts(args) {
   if (twice.length) stop(`the same account twice: ${twice.join(', ')}`)
 
   const raw = JSON.parse(read(FILES.config))
-  const tabs = emails.map((account, i) => ({ id: `ARGON_${i + 1}`, account, model: raw.tabs?.[i]?.model || DEFAULTS.tabs[0].model }))
+  const tabs = emails.map((_, i) => ({ id: `ARGON_${i + 1}`, model: raw.tabs?.[i]?.model || DEFAULTS.tabs[0].model }))
   const kept = (raw.crews ?? DEFAULTS.crews).filter(n => n <= tabs.length)
   const crews = kept.length ? kept : [tabs.length]
   const crew = crews.includes(raw.crew) ? raw.crew : null
+  write(FILES.accounts, JSON.stringify({ accounts: emails }, null, 2) + '\n')
   write(FILES.config, JSON.stringify({ ...raw, tabs, crews, crew }, null, 2) + '\n')
-  console.log(tabs.map(t => `  ${t.id}  ${t.account}`).join('\n'))
-  done(`ACCOUNTS — ${tabs.length} working accounts saved by email; crews ${crews.join(', ')}. Commit conveyor/conveyor.config.json before the next run`)
+  console.log(tabs.map((t, i) => `  ${t.id}  ${emails[i]}`).join('\n'))
+  if (git('ls-files', 'conveyor/accounts.local.json').trim()) {
+    stop('conveyor/accounts.local.json is tracked by git, so the emails would be published: git rm --cached conveyor/accounts.local.json, and check that .gitignore has the conveyor block (init adds it)')
+  }
+  done(`ACCOUNTS — ${tabs.length} working accounts saved in conveyor/accounts.local.json, which git ignores; crews ${crews.join(', ')}. Commit conveyor/conveyor.config.json (it holds no emails) before the next run`)
 }
 
 // ── status / abort ──────────────────────────────────────────────────────────────────────────────

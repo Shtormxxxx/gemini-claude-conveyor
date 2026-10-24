@@ -74,7 +74,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     }
     assert.match(readFileSync(join(project, 'AGENTS.md'), 'utf8'), /<!-- conveyor:start -->[\s\S]*## Conveyor/)
     assert.match(readFileSync(join(project, 'CLAUDE.md'), 'utf8'), /^@AGENTS\.md$/m)
-    assert.match(readFileSync(join(project, '.gitignore'), 'utf8'), /\/conveyor\/run\//)
+    assert.match(readFileSync(join(project, '.gitignore'), 'utf8'), /\/conveyor\/run\/[\s\S]*\/conveyor\/accounts\.local\.json/)
 
     // Fast checks, a deploy that always runs and one only for api/, no ECC download in a test.
     const quick = 'node -e "process.exit(0)"'
@@ -95,7 +95,11 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'nope']).out), /STOP — not an email: nope/)
     assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'W1@example.com']).out), /STOP — the same account twice/)
     const emails = Array.from({ length: 8 }, (_, i) => `w${i + 1}@example.com`)
-    assert.match(lastLine(conveyor(['accounts', ...emails]).out), /ACCOUNTS — 8 working accounts saved by email; crews 4, 8/)
+    assert.match(lastLine(conveyor(['accounts', ...emails]).out), /ACCOUNTS — 8 working accounts saved in conveyor\/accounts\.local\.json, which git ignores; crews 4, 8/)
+    // The emails stay on this machine: the config that goes to git holds only the tabs.
+    assert.deepEqual(JSON.parse(readFileSync(join(project, 'conveyor/accounts.local.json'), 'utf8')).accounts, emails)
+    assert.doesNotMatch(readFileSync(configPath, 'utf8'), /@example\.com/)
+    assert.equal(git(project, 'status', '--porcelain').out.trim(), 'M conveyor/conveyor.config.json')
     git(project, 'add', '-A')
     git(project, 'commit', '-qm', 'accounts')
     assert.match(conveyor(['doctor']).out, /8 working accounts, each named by its email/)
@@ -175,6 +179,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     writeFileSync(join(inbox, 'argon-1.md'), [
       '=== FILE: package.json ===', '```json', '{ "name": "demo", "version": "2.0.0" }', '```',
       '=== FILE: api/key.js ===', '```js', `export const KEY = "AIza${'k'.repeat(35)}"`, '```',
+      '=== FILE: src/team.js ===', '```js', 'export const ME = "w3@example.com"', '```',
     ].join('\n'))
     assert.match(lastLine(conveyor(['apply']).out), /NEXT/)
     const flagged = conveyor(['diff'])
@@ -184,6 +189,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.match(lastLine(held.out), /ESCALATE — this ships only with the owner's word/)
     assert.match(held.out, /package\.json — dependencies/)
     assert.match(held.out, /api\/key\.js — looks like a Google API key \(AIzakk…\)/)
+    assert.match(held.out, /src\/team\.js — looks like a working account's email \(w…@example\.com\)/)
     const owned = conveyor(['ship', '--owner-ok'])
     assert.match(lastLine(owned.out), /SHIPPED/, owned.out)
     assert.match(owned.out, /DEPLOYED-API/)
@@ -246,6 +252,13 @@ test('the source checkout only installs, and says how', () => {
     assert.equal(v11.tabs.length, 8)
     assert.deepEqual(v11.crews, [4, 8])
     assert.equal(v11.project, 'Kept as the owner wrote it.')
+
+    // A 1.2 config with the emails in it: updating moves them out of git's reach.
+    writeFileSync(configPath, JSON.stringify({ ...v11, tabs: v11.tabs.map((t, i) => ({ ...t, account: `a${i}@example.com` })) }))
+    assert.match(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', repo, '--no-ecc']).out, /emails moved to conveyor\/accounts\.local\.json/)
+    assert.doesNotMatch(readFileSync(configPath, 'utf8'), /@example\.com/)
+    assert.equal(JSON.parse(readFileSync(join(repo, 'conveyor/accounts.local.json'), 'utf8')).accounts[7], 'a7@example.com')
+    assert.equal(git(repo, 'check-ignore', 'conveyor/accounts.local.json').out.trim(), 'conveyor/accounts.local.json')
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

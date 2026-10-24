@@ -35,11 +35,28 @@ import {
 const VERSION = '1.5.1'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const TOOL = resolve(HERE, '..')
+const SOURCE_TOOL = resolve(HERE, '..')
+
 // Installed in a project, the tool lives in <project>/conveyor/ next to its config. Anywhere else it
-// is the source checkout, which can only install itself.
-const INSTALLED = basename(TOOL) === 'conveyor' && existsSync(join(TOOL, 'conveyor.config.json'))
-const ROOT = INSTALLED ? resolve(TOOL, '..') : null
+// is the source checkout or global npm package, which acts on the current project if installed there.
+function resolveContext() {
+  if (basename(SOURCE_TOOL) === 'conveyor' && existsSync(join(SOURCE_TOOL, 'conveyor.config.json'))) {
+    return { tool: SOURCE_TOOL, root: resolve(SOURCE_TOOL, '..'), installed: true }
+  }
+  let dir = process.cwd()
+  while (dir) {
+    const candidate = join(dir, 'conveyor')
+    if (existsSync(join(candidate, 'conveyor.config.json'))) {
+      return { tool: candidate, root: dir, installed: true }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return { tool: SOURCE_TOOL, root: null, installed: false }
+}
+
+const { tool: TOOL, root: ROOT, installed: INSTALLED } = resolveContext()
 const RUN = join(TOOL, 'run')
 const OUT = join(RUN, 'out')
 const INBOX = join(RUN, 'inbox')
@@ -372,9 +389,11 @@ function detect(root) {
 }
 
 function init(args) {
-  if (INSTALLED) stop('this copy is already installed in a project; to update it, run init again from a fresh clone of the repository')
+  if (basename(SOURCE_TOOL) === 'conveyor' && existsSync(join(SOURCE_TOOL, 'conveyor.config.json'))) {
+    stop('this copy is already installed in a project; to update it, run init again from a fresh clone of the repository')
+  }
   const target = resolve(args.find(a => !a.startsWith('--')) || process.cwd())
-  if (target === TOOL) stop('give the path to your project: node bin/conveyor.mjs init <project folder>')
+  if (target === SOURCE_TOOL) stop('give the path to your project: node bin/conveyor.mjs init <project folder>')
   // Asked of git rather than compared as strings: Windows writes one folder several ways (C:\Users\RUNNER~1
   // and C:/Users/runneradmin), and only git knows whether this is the top of the repository.
   const where = run('git', ['rev-parse', '--show-prefix', '--show-toplevel'], { capture: true, cwd: target })
@@ -389,9 +408,9 @@ function init(args) {
   if (updating && running.base && !running.shippedAt && !args.includes('--force')) {
     stop(`a run is in progress in ${target} ("${running.title || running.task || 'untitled'}"): finish it (ship), or put it aside with node conveyor/bin/conveyor.mjs abort, then run init again`)
   }
-  for (const part of ['bin', 'lib']) cpSync(join(TOOL, part), join(dest, part), { recursive: true })
-  for (const name of ['CONVEYOR_PLAN.md', 'FOR_REVIEW.md']) cpSync(join(TOOL, 'templates', name), join(dest, 'templates', name))
-  cpSync(join(TOOL, 'templates', 'README.project.md'), join(dest, 'README.md'))
+  for (const part of ['bin', 'lib']) cpSync(join(SOURCE_TOOL, part), join(dest, part), { recursive: true })
+  for (const name of ['CONVEYOR_PLAN.md', 'FOR_REVIEW.md']) cpSync(join(SOURCE_TOOL, 'templates', name), join(dest, 'templates', name))
+  cpSync(join(SOURCE_TOOL, 'templates', 'README.project.md'), join(dest, 'README.md'))
   const configPath = join(dest, 'conveyor.config.json')
   if (updating) {
     // 1.0 shipped two Gemini tabs; a config still on exactly those gets the eight working accounts.

@@ -1,0 +1,13 @@
+{
+  "name": "gemini-claude-conveyor",
+  "version": "1.0.0",
+  "description": "Конвейер задач для Gemini Pro и Claude Pro: один запрос в Antigravity → план (Claude) → код (вкладки Gemini) → проверки → ревью (Claude) → выкладка.",
+  "type": "module",
+  "bin": { "conveyor": "bin/conveyor.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "keywords": ["antigravity", "claude-code", "gemini", "ai-agents", "workflow", "conveyor"],
+  "license": "MIT"
+}

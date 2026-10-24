@@ -48,11 +48,20 @@ The plan step printed where each prompt file goes. The quota guard decides it, n
   brief is very hard), write the answer the same way, then switch back.
 
 For each prompt that goes to a tab:
-1. With @browser, open the tab's address, start a new chat, make sure the model picker shows the
-   model the plan step named (choose it if not), paste the whole prompt file and send it.
-2. Send every prompt before waiting for any answer, so the tabs work at the same time — with a crew
+1. With @browser, open the tab's address. Make sure the page is signed in to the tab's account — the
+   email the plan step printed: open the account menu (the avatar, top right) and read the email.
+   - Another account is open: pick the tab's email in that menu. The address may change to another
+     /u/N/ — that is fine, the email is what counts.
+   - The email is not in the menu, or Google asks to sign in: do not send there. Run
+     `node conveyor/bin/conveyor.mjs status --block <TAB>`, write that part yourself (on a Claude
+     model if its brief is heavy), and say so in the report.
+   - The tab is named by position ("account at /u/N/") and has no email: send there, but tell the
+     owner to name the accounts by email (see `conveyor/README.md`).
+2. Start a new chat, make sure the model picker shows the model the plan step named (choose it if
+   not), paste the whole prompt file and send it.
+3. Send every prompt before waiting for any answer, so the tabs work at the same time — with a crew
    of 8 or 9, go through the tabs one after another, sending, then come back to collect.
-3. When an answer has finished (the stop button is gone), press that answer's copy button and save
+4. When an answer has finished (the stop button is gone), press that answer's copy button and save
    the copied text, unchanged, under the prompt's name: `argon-3.prompt.md` → `conveyor/run/inbox/argon-3.md`,
    whichever tab answered it.
 
@@ -61,7 +70,7 @@ If a tab is signed out, says it has hit a limit, or fails twice: run
 file (on a Claude model if its brief is marked heavy), save it as the same inbox file, and say so in
 the report.
 
-4. Run `node conveyor/bin/conveyor.mjs apply`. It writes the files from the answers into the project.
+5. Run `node conveyor/bin/conveyor.mjs apply`. It writes the files from the answers into the project.
    - `FIX`: in that same chat ask "Send the complete file <path> again, in the same format", save the
      answer as `conveyor/run/inbox/<name>-fix.md` (e.g. `argon-3-fix.md`), and run `apply` again.
 

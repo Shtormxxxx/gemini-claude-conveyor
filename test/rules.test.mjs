@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import {
   assignTabs, block, compileRules, deployFor, fenceFor, fill, fingerprint, firstMatch, ownerReasons,
   projectPath, quotaView, readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent,
-  scanSecrets, section, slug, tabPrompt, tail,
+  scanSecrets, section, slug, tabPrompt, tail, positionOf, tabLabel, tabUrl,
 } from '../lib/rules.mjs'
 
 test('paths are made relative to the project, and anything outside it is refused', () => {
@@ -184,6 +184,15 @@ test('when no crew tab has room, briefs go to the conductor: fast model, or Clau
     ARGON_1: { route: 'FLASH' },
     ARGON_3: { route: 'CLAUDE' },
   })
+})
+
+test('a tab named by email opens Gemini for that account, wherever Chrome has put it', () => {
+  assert.equal(tabUrl({ account: 'work.2@gmail.com' }), 'https://gemini.google.com/app?authuser=work.2%40gmail.com')
+  assert.equal(tabUrl({ account: 'a@b.co', url: 'https://example.com/x' }), 'https://example.com/x')
+  assert.equal(positionOf('https://gemini.google.com/u/5/app'), 5)
+  assert.equal(positionOf('https://gemini.google.com/app?authuser=a%40b.co'), null)
+  assert.equal(tabLabel({ account: 'a@b.co', url: 'x' }), 'a@b.co')
+  assert.equal(tabLabel({ url: 'https://gemini.google.com/u/2/app' }), 'account at /u/2/ (by position)')
 })
 
 test('the crew size is read from --crew N or --crew=N, and the rest is the task', () => {

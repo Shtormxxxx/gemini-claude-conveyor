@@ -27,6 +27,21 @@ test('a config from before crews keeps working with the tabs it has', () => {
   assert.deepEqual(readConfig(JSON.stringify({ tabs: five })).config.crews, [4])
 })
 
+test('tabs are named by email or given a url; one account never backs two tabs', () => {
+  const ok = readConfig(JSON.stringify({ crews: [2], tabs: [{ id: 'ARGON_1', account: 'one@gmail.com' }, { id: 'ARGON_2', url: 'https://gemini.google.com/u/5/app' }] }))
+  assert.deepEqual(ok.problems, [])
+  assert.deepEqual(ok.config.tabs.map(t => t.url), ['https://gemini.google.com/app?authuser=one%40gmail.com', 'https://gemini.google.com/u/5/app'])
+  const text = readConfig(JSON.stringify({ crews: [4], tabs: [
+    { id: 'ARGON_1', account: 'One@gmail.com' }, { id: 'ARGON_2', account: 'one@gmail.com' },
+    { id: 'ARGON_3', url: 'https://gemini.google.com/u/2/app' }, { id: 'ARGON_4', url: 'https://gemini.google.com/u/2/app' },
+    { id: 'ARGON_5', account: 'not-an-email' }, { id: 'ARGON_6' },
+  ] })).problems.join('\n')
+  assert.match(text, /ARGON_1 and ARGON_2 are the same account \(one@gmail\.com\)/)
+  assert.match(text, /ARGON_3 and ARGON_4 are the same account \(\/u\/2\/\)/)
+  assert.match(text, /ARGON_5: "account" must be the account's email/)
+  assert.match(text, /ARGON_6: give "account"/)
+})
+
 test('crew sizes must fit the tabs, and a fixed crew must be one of them', () => {
   const tabs = Array.from({ length: 10 }, (_, i) => ({ id: `ARGON_${i + 1}`, url: `https://gemini.google.com/u/${i + 1}/app` }))
   assert.deepEqual(readConfig(JSON.stringify({ tabs, crews: [5, 10], crew: 10 })).problems, [])
@@ -53,7 +68,7 @@ test('mistakes in the config are named, one by one', () => {
     deploy: [{ run: 'x', when: '[' }],
   }))
   const text = problems.join('\n')
-  for (const expected of [/"checks"/, /UPPER_CASE/, /must start with https/, /appears twice/, /quota\.budget/, /"ownerOnly" has a pattern/, /deploy "when"/]) {
+  for (const expected of [/"checks"/, /UPPER_CASE/, /a "url" starting with https/, /appears twice/, /quota\.budget/, /"ownerOnly" has a pattern/, /deploy "when"/]) {
     assert.match(text, expected)
   }
 })

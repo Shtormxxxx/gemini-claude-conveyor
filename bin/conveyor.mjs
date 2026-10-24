@@ -7,6 +7,7 @@
 //   doctor       what is ready and what is missing
 //   setup        install ECC for Antigravity (init and plan do it on their own when it is missing)
 //   status       the quota guard: what each tab has left; --block / --unblock / --reset <TAB>
+//   accounts     the working accounts by email, in order: accounts a@gmail.com b@gmail.com …
 //   plan         --crew N: Claude writes the plan for N working accounts; each prompt gets its files
 //   apply        writes the files from the answers saved in conveyor/run/inbox/
 //   diff         the project's checks, then the run's diff → conveyor/run/FOR_REVIEW.md
@@ -25,10 +26,10 @@ import { DEFAULTS, guards, readConfig } from '../lib/config.mjs'
 import {
   assignTabs, block, deployFor, fill, fingerprint, firstMatch, ownerReasons, projectPath, quotaView,
   readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent, scanSecrets, section, slug,
-  tabPrompt, tail,
+  tabLabel, tabPrompt, tail, EMAIL,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.1.0'
+const VERSION = '1.2.0'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = resolve(HERE, '..')
@@ -258,7 +259,7 @@ function init(args) {
     const { config } = readConfig(read(join(dest, 'conveyor.config.json')))
     ensureEcc(config, target)
   }
-  done(`INSTALLED — next: check "project" and "checks" in conveyor/conveyor.config.json, commit, then run ${CMD} doctor in the project`)
+  done(`INSTALLED — next: name the working accounts (${CMD} accounts <email> <email> …), check "project" and "checks" in conveyor/conveyor.config.json, commit, then run ${CMD} doctor`)
 }
 
 // ── doctor / setup ──────────────────────────────────────────────────────────────────────────────
@@ -292,6 +293,9 @@ function doctor() {
     else warn('could not tell whether Claude Code is signed in — run `claude` once in this folder to be sure')
   }
 
+  const byPosition = config.tabs.filter(t => !t.account)
+  if (!byPosition.length) ok(`${config.tabs.length} working accounts, each named by its email`)
+  else warn(`${byPosition.map(t => t.id).join(', ')} ${byPosition.length === 1 ? 'is' : 'are'} addressed by position (/u/N/), which shifts when an account signs in or out of Chrome — name them by email: ${CMD} accounts <email> <email> …`)
   if (existsSync(join(ROOT, '.agents', 'workflows', 'conveyor.md'))) ok('the /conveyor workflow is in .agents/workflows/')
   else no('.agents/workflows/conveyor.md is missing — run init again from the repository')
   if (read(join(ROOT, 'AGENTS.md')).includes(MARK.start)) ok('AGENTS.md has the conveyor section')
@@ -438,7 +442,7 @@ ${fill(read(join(TOOL, 'templates', 'CONVEYOR_PLAN.md')), { TAB_SECTIONS: tabSec
       quota = recordSent(quota, tabId, Date.now(), windowMs)
       sentTo[tabId] = (sentTo[tabId] || 0) + 1
       const moved = tabId === brief.id ? '' : `, moved from ${brief.id}`
-      lines.push(`  ${file} → ${tabId} ${tab.url} (${tab.model || 'its model'})  [${kb}; ${view[tabId].used + sentTo[tabId]} of ${config.quota.budget} in the window${moved}]`)
+      lines.push(`  ${file} → ${tabId}, ${tabLabel(tab)}: ${tab.url} (${tab.model || 'its model'})  [${kb}; ${view[tabId].used + sentTo[tabId]} of ${config.quota.budget} in the window${moved}]`)
     } else {
       lines.push(`  ${file} → YOU, ${route === 'CLAUDE'
         ? 'on a Claude model in Antigravity (Sonnet Thinking; Opus Thinking if very hard)'
@@ -688,6 +692,33 @@ function ship(args) {
   done(`SHIPPED ${commit} — check what the plan says to check, with @browser where it is a page, and report to the owner`)
 }
 
+// ── accounts ────────────────────────────────────────────────────────────────────────────────────
+
+// The working accounts, by email and in order: ARGON_1 is the first email, and so on. Without
+// emails, lists the tabs as they are. Crews that no longer fit are dropped; if none fit, the crew is
+// all the accounts given.
+function accounts(args) {
+  const { config } = project()
+  if (!args.length) {
+    console.log(config.tabs.map(t => `  ${t.id}  ${tabLabel(t)}`).join('\n'))
+    done(`ACCOUNTS — ${config.tabs.length} working accounts. To name them by email, in order: ${CMD} accounts <email> <email> …`)
+  }
+  const emails = args.map(a => a.trim()).filter(Boolean)
+  const bad = emails.filter(e => !EMAIL.test(e))
+  if (bad.length) stop(`not an email: ${bad.join(', ')}`)
+  const twice = emails.filter((e, i) => emails.findIndex(x => x.toLowerCase() === e.toLowerCase()) !== i)
+  if (twice.length) stop(`the same account twice: ${twice.join(', ')}`)
+
+  const raw = JSON.parse(read(FILES.config))
+  const tabs = emails.map((account, i) => ({ id: `ARGON_${i + 1}`, account, model: raw.tabs?.[i]?.model || DEFAULTS.tabs[0].model }))
+  const kept = (raw.crews ?? DEFAULTS.crews).filter(n => n <= tabs.length)
+  const crews = kept.length ? kept : [tabs.length]
+  const crew = crews.includes(raw.crew) ? raw.crew : null
+  write(FILES.config, JSON.stringify({ ...raw, tabs, crews, crew }, null, 2) + '\n')
+  console.log(tabs.map(t => `  ${t.id}  ${t.account}`).join('\n'))
+  done(`ACCOUNTS — ${tabs.length} working accounts saved by email; crews ${crews.join(', ')}. Commit conveyor/conveyor.config.json before the next run`)
+}
+
 // ── status / abort ──────────────────────────────────────────────────────────────────────────────
 
 // The quota guard's view. --block <TAB> records that the owner saw the tab near its 70–75% line
@@ -715,7 +746,7 @@ function status(args) {
   console.log(`Working accounts, counted by the conveyor over the last ${config.quota.windowHours} hours:`)
   for (const tab of config.tabs) {
     const v = view[tab.id]
-    console.log(`  ${tab.id}  ${tab.url}  ${v.used} of ${v.budget} heavy requests — ${v.available
+    console.log(`  ${tab.id}  ${tabLabel(tab)}  ${v.used} of ${v.budget} heavy requests — ${v.available
       ? 'takes prompts'
       : `held back until ${clock(v.freesAt)}: its briefs go to another tab in the crew, or to the conductor`}`)
   }
@@ -752,12 +783,13 @@ ${INSTALLED ? `In this project:  ${CMD} <command>` : 'From this repository:  nod
   plan --crew N Claude plans for N accounts        apply     write the files from the tabs' answers
   diff         checks + the diff for review       review    Claude reviews and gives a verdict
   ship         checks, commit, push, deploy       abort     put the run's changes aside
+  accounts     the working accounts by email, in order: accounts a@gmail.com b@gmail.com …
 
 README.md explains everything.`)
 }
 
 const [command, ...args] = process.argv.slice(2)
-const commands = { init, doctor, setup, plan, apply, diff, review, ship, status, abort, help, '--help': help, '-h': help }
+const commands = { init, doctor, setup, plan, apply, diff, review, ship, status, accounts, abort, help, '--help': help, '-h': help }
 if (command === '--version' || command === 'version') {
   console.log(VERSION)
 } else if (!commands[command]) {

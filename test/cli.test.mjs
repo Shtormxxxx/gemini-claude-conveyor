@@ -89,6 +89,16 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     const conveyor = (args, env) => sh(project, process.execPath, ['conveyor/bin/conveyor.mjs', ...args], { STUB_PLAN: PLAN, ...env })
     const doctor = conveyor(['doctor'])
     assert.match(lastLine(doctor.out), /READY/, doctor.out)
+    assert.match(doctor.out, /ARGON_1, .*ARGON_9 are addressed by position/)
+
+    // Name the working accounts by email; positions in Chrome are not to be trusted.
+    assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'nope']).out), /STOP — not an email: nope/)
+    assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'W1@example.com']).out), /STOP — the same account twice/)
+    const emails = Array.from({ length: 9 }, (_, i) => `w${i + 1}@example.com`)
+    assert.match(lastLine(conveyor(['accounts', ...emails]).out), /ACCOUNTS — 9 working accounts saved by email; crews 4, 8, 9/)
+    git(project, 'add', '-A')
+    git(project, 'commit', '-qm', 'accounts')
+    assert.match(conveyor(['doctor']).out, /9 working accounts, each named by its email/)
 
     // The crew is asked before anything else, and must be one of the configured sizes.
     const asked = conveyor(['plan', 'Greet people'])
@@ -111,7 +121,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.match(toClaude, /## PROMPT_FOR_ARGON_4\nNONE/)
     assert.doesNotMatch(toClaude, /PROMPT_FOR_ARGON_5/)
     assert.match(planned.out, /crew of 4/)
-    assert.match(planned.out, /argon-1\.prompt\.md → ARGON_1 https:\/\/gemini\.google\.com\/u\/1\/app/)
+    assert.match(planned.out, /argon-1\.prompt\.md → ARGON_1, w1@example\.com: https:\/\/gemini\.google\.com\/app\?authuser=w1%40example\.com/)
     const prompt = readFileSync(join(project, 'conveyor/run/out/argon-1.prompt.md'), 'utf8')
     assert.match(prompt, /demo: React \+ Vite/)
     assert.match(prompt, /=== FILE: src\/app\.js ===\n```js\nexport const greet/)
@@ -184,7 +194,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.match(lastLine(status.out), /8 of 9 tabs take prompts/)
     assert.match(status.out, /Crews: 4 \(ARGON_1…ARGON_4\) · 8 \(ARGON_1…ARGON_8\) · 9 \(ARGON_1…ARGON_9\) — asked every run/)
     const moved = conveyor(['plan', '--crew', '4', 'Greet again'])
-    assert.match(moved.out, /argon-1\.prompt\.md → ARGON_2 https:\/\/gemini\.google\.com\/u\/2\/app .*moved from ARGON_1/)
+    assert.match(moved.out, /argon-1\.prompt\.md → ARGON_2, w2@example\.com: .*moved from ARGON_1/)
     conveyor(['abort'])
     conveyor(['status', '--block', 'ARGON_2', '--block', 'ARGON_3', '--block', 'ARGON_4'])
     const rerouted = conveyor(['plan', '--crew', '4', 'Greet again'])

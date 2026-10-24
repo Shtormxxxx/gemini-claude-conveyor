@@ -8,7 +8,7 @@ guide is `conveyor/README.md`.
 | Role | Who | Does |
 |---|---|---|
 | Architect | Claude, run headless by `conveyor plan` | reads only what the task needs and writes `conveyor/run/CONVEYOR_PLAN.md`: a brief for each tab and the wiring for the conductor. Writes no long code. |
-| Coders | the crew for this run: 4, 8 or 9 working accounts, Gemini in the owner's Chrome (`tabs`, `crews` in the config) | answer `conveyor/run/out/<name>.prompt.md` with whole files |
+| Coders | the crew for this run: 4 or 8 working accounts, Gemini in the owner's Chrome (`tabs`, `crews` in the config) | answer `conveyor/run/out/<name>.prompt.md` with whole files |
 | Conductor | Antigravity, with @browser | carries prompts and answers, runs every command, wires imports, fixes small build errors |
 | Reviewer | Claude, run headless by `conveyor review` | reads the diff in `conveyor/run/FOR_REVIEW.md`, fixes with small edits, writes `VERDICT:` |
 

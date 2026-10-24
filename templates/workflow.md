@@ -1,6 +1,6 @@
 ---
 description: One request → plan (Claude) → code (Gemini tabs) → wiring and checks (you) → review (Claude) → ship and check
-argument-hint: "[4|8|9] <task>"
+argument-hint: "[4|8] <task>"
 ---
 
 # /conveyor [crew] <task>
@@ -20,7 +20,7 @@ by "reportLanguage" in `conveyor/conveyor.config.json`. If the owner says to sto
 
 ## 0. Crew and quota
 1. The crew: if the owner's message starts with a number that is one of the sizes in "crews" in
-   `conveyor/conveyor.config.json` (4, 8 or 9 by default), or says it in words ("на 8 аккаунтах",
+   `conveyor/conveyor.config.json` (4 or 8 by default), or says it in words ("на 8 аккаунтах",
    "crew 8"), that is the crew, and the rest of the message is the task. Otherwise — unless "crew"
    in the config is fixed — ask the owner exactly one question, in their language: how many working
    accounts to use this run, listing the sizes; wait for the answer. This is the only question a run
@@ -60,7 +60,7 @@ For each prompt that goes to a tab:
 2. Start a new chat, make sure the model picker shows the model the plan step named (choose it if
    not), paste the whole prompt file and send it.
 3. Send every prompt before waiting for any answer, so the tabs work at the same time — with a crew
-   of 8 or 9, go through the tabs one after another, sending, then come back to collect.
+   of 8, go through the tabs one after another, sending, then come back to collect.
 4. When an answer has finished (the stop button is gone), press that answer's copy button and save
    the copied text, unchanged, under the prompt's name: `argon-3.prompt.md` → `conveyor/run/inbox/argon-3.md`,
    whichever tab answered it.

@@ -12,11 +12,11 @@ test('an empty config is the defaults, with no problems', () => {
   assert.deepEqual(config, DEFAULTS)
 })
 
-test('the default team is nine working accounts, run as a crew of 4, 8 or 9, asked every run', () => {
+test('the default team is eight working accounts, run as a crew of 4 or 8, asked every run', () => {
   const { config } = readConfig('')
-  assert.equal(config.tabs.length, 9)
-  assert.deepEqual(config.tabs.map(t => t.url.match(/\/u\/(\d)\//)[1]), ['1', '2', '3', '4', '5', '6', '7', '8', '9'])
-  assert.deepEqual(config.crews, [4, 8, 9])
+  assert.equal(config.tabs.length, 8)
+  assert.deepEqual(config.tabs.map(t => t.url.match(/\/u\/(\d)\//)[1]), ['1', '2', '3', '4', '5', '6', '7', '8'])
+  assert.deepEqual(config.crews, [4, 8])
   assert.equal(config.crew, null)
 })
 
@@ -45,7 +45,7 @@ test('tabs are named by email or given a url; one account never backs two tabs',
 test('crew sizes must fit the tabs, and a fixed crew must be one of them', () => {
   const tabs = Array.from({ length: 10 }, (_, i) => ({ id: `ARGON_${i + 1}`, url: `https://gemini.google.com/u/${i + 1}/app` }))
   assert.deepEqual(readConfig(JSON.stringify({ tabs, crews: [5, 10], crew: 10 })).problems, [])
-  assert.match(readConfig(JSON.stringify({ crews: [4, 12] })).problems.join(), /between 1 and 9/)
+  assert.match(readConfig(JSON.stringify({ crews: [4, 12] })).problems.join(), /between 1 and 8/)
   assert.match(readConfig(JSON.stringify({ crew: 5 })).problems.join(), /"crew" must be null/)
 })
 

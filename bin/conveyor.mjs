@@ -29,7 +29,7 @@ import {
   tabLabel, tabPrompt, tail, EMAIL,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.2.0'
+const VERSION = '1.3.0'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = resolve(HERE, '..')
@@ -222,12 +222,12 @@ function init(args) {
   cpSync(join(TOOL, 'templates', 'README.project.md'), join(dest, 'README.md'))
   const configPath = join(dest, 'conveyor.config.json')
   if (updating) {
-    // 1.0 shipped two Gemini tabs; a config still on exactly those gets the nine working accounts.
+    // 1.0 shipped two Gemini tabs; a config still on exactly those gets the eight working accounts.
     const old = JSON.parse(read(configPath))
     const twoTabs = Array.isArray(old.tabs) && old.tabs.length === 2 && old.tabs.every((t, i) => t.id === `ARGON_${i + 1}` && t.url === `https://gemini.google.com/u/${i + 1}/app`)
     if (twoTabs && old.crews === undefined) {
       write(configPath, JSON.stringify({ ...old, tabs: DEFAULTS.tabs, crews: DEFAULTS.crews, crew: DEFAULTS.crew }, null, 2) + '\n')
-      console.log('conveyor.config.json: the two Gemini tabs became nine working accounts, run with a crew of 4, 8 or 9.\n')
+      console.log('conveyor.config.json: the two Gemini tabs became eight working accounts, run with a crew of 4 or 8.\n')
     }
   }
   if (!updating) {

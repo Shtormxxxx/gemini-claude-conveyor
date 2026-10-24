@@ -1,5 +1,5 @@
 ---
-description: One request → plan (Claude) → code (Gemini tabs) → wiring and checks (you) → review (Claude) → ship and check
+description: One request → plan (Claude) → code (Gemini tabs) → wiring and checks (you) → pre-review (a free tab) → review (Claude) → ship and check
 argument-hint: "[4|8] <task>"
 ---
 
@@ -25,9 +25,11 @@ by "reportLanguage" in `conveyor/conveyor.config.json`. If the owner says to sto
    in the config is fixed — ask the owner exactly one question, in their language: how many working
    accounts to use this run, listing the sizes; wait for the answer. This is the only question a run
    asks at its start.
-2. Run `node conveyor/bin/conveyor.mjs status`. It shows how much of its window each tab has used, as
-counted by the conveyor. If the owner told you a tab is near its limit, or the chat in a tab warns
-about limits, run `node conveyor/bin/conveyor.mjs status --block <TAB>` for it.
+2. Run `node conveyor/bin/conveyor.mjs status`. It shows Claude's limits as Claude Code reports them
+and the model the next Claude steps get — the conveyor picks it itself, never pass a model — and how
+much of its window each tab has used, as counted by the conveyor. If the owner told you a tab is near
+its limit, or the chat in a tab warns about limits, run
+`node conveyor/bin/conveyor.mjs status --block <TAB>` for it.
 Open View Usage in Antigravity: if 30% or less of the Gemini five-hour limit is left, switch your own
 model to a Claude model (Sonnet Thinking) for this whole run.
 
@@ -37,11 +39,12 @@ model to a Claude model (Sonnet Thinking) for this whole run.
 2. Run `node conveyor/bin/conveyor.mjs plan --crew <N>` with the crew from step 0. Claude reads the
    code and writes `conveyor/run/CONVEYOR_PLAN.md`, splitting the work over up to N tabs; this takes
    a few minutes. Then read the plan. (`ASK` means the crew was missing: do step 0.1.)
+   `STOP — Claude: …` means Claude's limit is nearly spent: tell the owner when it resets, and stop.
 
 ## 2. Code — the browser tabs, through @browser
 The plan step printed where each prompt file goes. The quota guard decides it, never you:
 - a tab id and address: send it there, as below — a prompt may be sent to another tab than its
-  name says ("moved from"), when its own tab had no room;
+  name says ("moved from"), when its own tab had no room, even to a spare account outside the crew;
 - "YOU, on your fast Gemini model": write the answer yourself from the prompt file, in its answer
   format, and save it as the inbox file below;
 - "YOU, on a Claude model": switch Antigravity's model picker to Sonnet Thinking (Opus Thinking if the
@@ -77,17 +80,33 @@ the report.
 ## 3. Wiring and checks — you
 1. Do exactly what INSTRUCTIONS_FOR_FLASH in the plan says, and nothing more.
 2. Run `node conveyor/bin/conveyor.mjs diff`. It runs the project's checks and writes
-   `conveyor/run/FOR_REVIEW.md`.
+   `conveyor/run/FOR_REVIEW.md`. Its last line names the next step: `prereview` or `review`.
 3. `CHECKS FAILED` with a small cause (a typo, a wrong import path, a missing export): fix it and run
-   `diff` again. After three rounds, go on to the review anyway.
+   `diff` again. After three rounds, go on to the next step anyway.
+
+## 3b. Pre-review — a working account that wrote none of the run
+Only when `diff` named `prereview`. It costs no Claude limit and spares Claude a round of fixes.
+1. Run `node conveyor/bin/conveyor.mjs prereview`. It writes `conveyor/run/out/prereview.prompt.md`
+   and names the tab for it.
+2. Send that file to that tab exactly as in step 2 (check the account's email first, new chat, the
+   model the step named), wait for the whole answer, copy it and save it, unchanged, as
+   `conveyor/run/inbox/prereview.md`.
+3. Run `node conveyor/bin/conveyor.mjs prereview` again. It writes the files the answer corrected.
+   - It says to run `diff`: run `diff` (the checks again), then go to step 4.
+   - `FIX`: do what it says.
+   If the tab is signed out, at its limit, or fails twice: `node conveyor/bin/conveyor.mjs prereview --skip`,
+   then step 4.
 
 ## 4. Review — Claude
 Run `node conveyor/bin/conveyor.mjs review`. Claude reads the diff, fixes what it finds with small
-edits and writes `conveyor/run/REVIEW_VERDICT.md`.
+edits and writes `conveyor/run/REVIEW_VERDICT.md`; the program then runs the checks on its edits.
+A second review reads only what changed since the first.
 - `APPROVE`: go to step 5.
 - `REWORK`: do what the verdict asks, then step 3.2 and this step again. After two REWORK rounds,
   stop and show the owner the verdict.
 - `ESCALATE`: show the owner the verdict and stop.
+- `STOP — the folder changed after diff ran`: run `diff`, then this step again.
+- `STOP — Claude: …` (its limit is nearly spent): tell the owner when it resets, and stop.
 
 Change nothing between an `APPROVE` and step 5: the approval covers only the exact diff that was
 reviewed, and `ship` refuses anything else.
@@ -99,5 +118,6 @@ reviewed, and `ship` refuses anything else.
      yourself — only the owner types it.
 2. Check what the plan lists under "Check after deploy" — with @browser where it is a page (press
    Ctrl+F5 once on each).
-3. Report to the owner in a few lines: what changed, the commit, what you saw, and anything you did
-   yourself instead of a tab.
+3. Report to the owner in a few lines: what changed, the commit, what you saw, anything you did
+   yourself instead of a tab, and what the run cost of Claude's five-hour limit (the "this step"
+   figures the plan and review printed).

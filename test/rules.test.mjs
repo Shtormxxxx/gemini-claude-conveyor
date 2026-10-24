@@ -1,12 +1,14 @@
 // lib/rules.mjs — what a browser chat may write, what ships only with the owner, how plans, answers
-// and verdicts are read, the quota guard and the secret scan: each is a gate a run relies on.
+// and verdicts are read, the pre-review, the quota guard with its spares, the guard on Claude's
+// limits and the secret scan: each is a gate a run relies on.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  assignTabs, block, compileRules, deployFor, fenceFor, fill, fingerprint, firstMatch, ownerReasons,
-  projectPath, quotaView, readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent,
-  scanSecrets, section, slug, tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails,
+  assignTabs, block, claudeChoice, compileRules, deployFor, fenceFor, fileMap, fill, fingerprint, firstMatch,
+  ownerReasons, prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream,
+  readCrewArg, readLimits, readPlan, readPrereview, readVerdict, recordSent, scanSecrets, section, slug,
+  tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails, weekPassed,
 } from '../lib/rules.mjs'
 
 test('paths are made relative to the project, and anything outside it is refused', () => {
@@ -60,6 +62,10 @@ test('a plan is read by its headings and its STATUS, WEIGHT and ATTACH lines', (
   assert.equal(section(plan, 'CHECK AFTER DEPLOY'), '- https://example.com/ — three cards')
   assert.equal(readPlan(PLAN.replace('STATUS: GO', 'STATUS: ESCALATE')).status, 'ESCALATE')
   assert.equal(readPlan('# Plan: x').status, null)
+  // REVIEW is standard or deep; the template's own "deep | standard", left as it is, reads as deep.
+  assert.equal(readPlan(PLAN).review, null)
+  assert.equal(readPlan(PLAN.replace('STATUS: GO', 'STATUS: GO\nREVIEW: Standard')).review, 'standard')
+  assert.equal(readPlan('REVIEW: deep | standard').review, 'deep')
   assert.equal(readBrief('ATTACH: none\n'), null)
   assert.equal(readBrief('Do it.').heavy, false)
 })
@@ -190,6 +196,137 @@ test('when no crew tab has room, briefs go to the conductor: fast model, or Clau
     ARGON_1: { route: 'FLASH' },
     ARGON_3: { route: 'CLAUDE' },
   })
+})
+
+test('with the whole crew out of room, a spare outside it stands in before the conductor does', () => {
+  const view = tabView({ ARGON_1: 12, ARGON_2: 12, ARGON_3: 0, ARGON_4: 5 })
+  const briefs = [{ id: 'ARGON_1', heavy: false }, { id: 'ARGON_2', heavy: true }]
+  // ARGON_3 has the most room and takes the first; then ARGON_4 has fewer briefs and takes the second.
+  assert.deepEqual(assignTabs(briefs, view, ['ARGON_1', 'ARGON_2'], ['ARGON_3', 'ARGON_4']), {
+    ARGON_1: { route: 'TAB', tab: 'ARGON_3', spare: true },
+    ARGON_2: { route: 'TAB', tab: 'ARGON_4', spare: true },
+  })
+  // The crew comes first: a brief written under a spare goes to a crew tab with room.
+  assert.deepEqual(assignTabs([{ id: 'ARGON_3', heavy: false }], tabView({ ARGON_1: 0, ARGON_3: 0 }), ['ARGON_1'], ['ARGON_3']), {
+    ARGON_3: { route: 'TAB', tab: 'ARGON_1' },
+  })
+  // With no room anywhere, the conductor.
+  assert.deepEqual(assignTabs(briefs, tabView({ ARGON_1: 12, ARGON_2: 12, ARGON_3: 12 }), ['ARGON_1', 'ARGON_2'], ['ARGON_3']), {
+    ARGON_1: { route: 'FLASH' }, ARGON_2: { route: 'CLAUDE' },
+  })
+})
+
+test('the pre-review goes to the account with the most room that wrote none of the run', () => {
+  const ids = ['ARGON_1', 'ARGON_2', 'ARGON_3', 'ARGON_4']
+  const view = tabView({ ARGON_1: 3, ARGON_2: 1, ARGON_3: 11, ARGON_4: 0 }, 12, ['ARGON_4'])
+  assert.equal(prereviewTab(view, ids, ['ARGON_2']), 'ARGON_1')
+  // When every free account wrote code, the one with the most room.
+  assert.equal(prereviewTab(view, ids, ['ARGON_1', 'ARGON_2', 'ARGON_3']), 'ARGON_2')
+  assert.equal(prereviewTab(tabView({ ARGON_1: 12 }), ['ARGON_1'], []), null)
+})
+
+test('the pre-review prompt carries the task, the diff and the files to correct, or asks for problems only', () => {
+  const opts = { project: 'A Vue site.', task: 'Add a page.', goal: 'A page.', checks: '✓ passed  npm test', diff: '+x' }
+  const text = prereviewPrompt({ ...opts, files: [{ path: 'src/a.vue', content: '<x/>\n' }] })
+  for (const expected of [/A Vue site\./, /THE TASK\nAdd a page\./, /WHAT THE CHANGE MUST DO\nA page\./, /CHECKS[^\n]*\n✓ passed {2}npm test/,
+    /THE DIFF\n```diff\n\+x\n```/, /=== FILE: src\/a\.vue ===\n```vue\n<x\/>\n```/, /PREREVIEW: PASS/, /3\. With FIX, for every file you correct/]) {
+    assert.match(text, expected)
+  }
+  const bare = prereviewPrompt({ ...opts, files: null })
+  assert.doesNotMatch(bare, /THE CHANGED FILES/)
+  assert.match(bare, /list the problems only, and send no files/)
+})
+
+test('the pre-review answer: its verdict, the problems listed before the files, and the files', () => {
+  const answer = readPrereview([
+    'Here is my review.', '**PREREVIEW: FIX**', '- src/a.js: off by one', '* src/b.js: no null check',
+    '=== FILE: src/a.js ===', '```js', 'x', '```', '- after the files: not a problem line',
+  ].join('\r\n'))
+  assert.equal(answer.verdict, 'FIX')
+  assert.deepEqual(answer.issues, ['src/a.js: off by one', 'src/b.js: no null check'])
+  assert.deepEqual(answer.files, [{ path: 'src/a.js', content: 'x\n' }])
+  assert.deepEqual(answer.problems, [])
+  assert.deepEqual(readPrereview('PREREVIEW: PASS\nAll good.'), { verdict: 'PASS', issues: [], files: [], problems: [] })
+  assert.equal(readPrereview('Looks fine to me.').verdict, null)
+  assert.match(readPrereview('PREREVIEW: FIX\n=== FILE: a.js ===\n```js\ncut').problems[0].message, /cut off/)
+})
+
+test('the architect\'s map lists every file when they fit, and folds the deepest folders when not', () => {
+  const paths = ['README.md', 'src/App.jsx', 'src/pages/Home.jsx', 'src/pages/About.jsx', 'src/data/lessons/a.json',
+    'src/data/lessons/b.json', 'public/img/a.png', 'public/img/b.woff2']
+  assert.equal(fileMap(paths, 100), [
+    'public/ — 2 files (images, fonts, media)',
+    'src/data/lessons/a.json', 'src/data/lessons/b.json', 'src/pages/About.jsx', 'src/pages/Home.jsx', 'src/App.jsx',
+    'README.md',
+  ].join('\n'))
+  assert.equal(fileMap(paths, 5), ['public/ — 2 files (images, fonts, media)', 'src/data/ — 2 files', 'src/pages/ — 2 files', 'src/App.jsx', 'README.md'].join('\n'))
+  assert.equal(fileMap(paths, 2), ['public/ — 2 files (images, fonts, media)', 'src/ — 5 files', '… and 1 more'].join('\n'))
+  assert.equal(fileMap([]), '')
+})
+
+// What Claude Code printed in a real probe, trimmed: the limits come in a rate_limit_event.
+const INFO = {
+  status: 'allowed_warning', resetsAt: 1793383200, rateLimitType: 'seven_day', utilization: 0.33,
+  unifiedWindows: { five_hour: { utilization: 0.08, resetsAt: 1792873200, status: 'allowed' }, seven_day: { utilization: 0.33, resetsAt: 1793383200, status: 'allowed' } },
+}
+
+test('Claude\'s limits are read from its rate_limit_event, new shape or old', () => {
+  assert.deepEqual(readLimits(INFO), {
+    fiveHour: { used: 0.08, resetsAt: 1792873200000 }, week: { used: 0.33, resetsAt: 1793383200000 }, rejected: null,
+  })
+  assert.deepEqual(readLimits({ status: 'allowed', rateLimitType: 'five_hour', utilization: 0.5, resetsAt: 100 }), {
+    fiveHour: { used: 0.5, resetsAt: 100000 }, week: null, rejected: null,
+  })
+  assert.deepEqual(readLimits({ status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: 100 }), {
+    fiveHour: null, week: null, rejected: { resetsAt: 100000, type: 'seven_day_opus' },
+  })
+  assert.equal(readLimits({ status: 'allowed' }), null)
+  assert.equal(readLimits(null), null)
+})
+
+test('a stream-json run is read for its model, last limits, result, cost and tokens', () => {
+  const stream = [
+    JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-haiku-5-5' }),
+    'not json at all',
+    JSON.stringify({ type: 'rate_limit_event', rate_limit_info: INFO }),
+    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: ' OK ', num_turns: 1, total_cost_usd: 0.00064,
+      usage: { input_tokens: 2, cache_creation_input_tokens: 3001, cache_read_input_tokens: 649, output_tokens: 73 } }),
+  ].join('\n')
+  assert.deepEqual(readClaudeStream(stream), {
+    model: 'claude-haiku-5-5', limits: readLimits(INFO), ok: true, text: 'OK', costUsd: 0.00064, turns: 1, tokensIn: 3652, tokensOut: 73,
+  })
+  assert.equal(readClaudeStream(stream.replace('"is_error":false', '"is_error":true')).ok, false)
+  assert.equal(readClaudeStream('').ok, false)
+})
+
+test('the guard on Claude\'s limits: main model, economy model, or no step at all', () => {
+  const claude = { model: 'opus', effort: 'high', economy: { model: 'sonnet', effort: 'xhigh' }, switchAt: 50, weekAhead: 15, stopAt: 95 }
+  const now = Date.parse('2026-10-24T12:00:00Z')
+  const hour = 60 * 60 * 1000
+  const at = (five, week, weekLeftDays = 6) => ({ fiveHour: { used: five, resetsAt: now + 2 * hour }, week: { used: week, resetsAt: now + weekLeftDays * 24 * hour }, rejected: null })
+  const tier = (limits, opts) => claudeChoice(limits, now, claude, opts).tier
+
+  assert.deepEqual(claudeChoice(at(0.1, 0.1), now, claude), { tier: 'main', model: 'opus', effort: 'high', why: 'the five-hour limit is at 10%, the week at 10%' })
+  assert.equal(claudeChoice(null, now, claude).why, 'Claude Code reported no limits')
+  // A routine review, and every step from 50% of the five-hour limit, on the economy model.
+  assert.deepEqual(claudeChoice(at(0.1, 0.1), now, claude, { routine: true }), { tier: 'economy', model: 'sonnet', effort: 'xhigh', why: 'a routine review (the plan says REVIEW: standard)' })
+  assert.match(claudeChoice(at(0.5, 0.1), now, claude).why, /five-hour limit is at 50%; from 50% the economy model works/)
+  // The week is kept for later when it is spent faster than it passes: a seventh of it gone, so 14%
+  // plus 15 points may be spent before the economy model takes over.
+  assert.equal(tier(at(0.28, 0.28)), 'main')
+  assert.match(claudeChoice(at(0.1, 0.3), now, claude).why, /the week is 30% spent with 14% of it gone/)
+  assert.equal(claudeChoice(at(0.1, 0.9), now, { ...claude, weekAhead: null }).tier, 'main')
+  // Near the top of either limit no step starts: it would be cut off halfway.
+  assert.deepEqual(claudeChoice(at(0.95, 0.1), now, claude), { tier: 'stop', model: null, effort: null, why: 'the five-hour limit is at 95%', until: now + 2 * hour })
+  assert.match(claudeChoice(at(0.1, 0.96), now, claude).why, /weekly limit is at 96%/)
+  assert.match(claudeChoice({ fiveHour: null, week: null, rejected: { resetsAt: now + hour, type: 'five_hour' } }, now, claude).why, /refuses for now \(five-hour reached\)/)
+  // A window that has reset is empty again; a refusal that has passed is over.
+  assert.equal(tier({ fiveHour: { used: 0.99, resetsAt: now - 1 }, week: null, rejected: null }), 'main')
+  assert.equal(tier({ fiveHour: null, week: null, rejected: { resetsAt: now - 1, type: 'five_hour' } }), 'main')
+  // Claude refusing the main model alone moves the steps to the economy one until then.
+  assert.match(claudeChoice(at(0.1, 0.1), now, claude, { mainRefusedUntil: now + hour }).why, /refuses opus for now/)
+  assert.equal(tier(at(0.1, 0.1), { mainRefusedUntil: now - 1 }), 'main')
+  assert.deepEqual([weekPassed(now + 7 * 24 * hour, now), weekPassed(now + 3.5 * 24 * hour, now), weekPassed(now, now)], [0, 0.5, 1])
 })
 
 test('a tab named by email opens Gemini for that account, wherever Chrome has put it', () => {

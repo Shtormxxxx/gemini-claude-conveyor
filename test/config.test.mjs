@@ -67,6 +67,20 @@ test('a partial config keeps the defaults it does not mention', () => {
   assert.equal(config.ecc.version, DEFAULTS.ecc.version)
 })
 
+test('Claude\'s settings: an older config gets the guard\'s defaults, and mistakes are named', () => {
+  assert.deepEqual(readConfig(JSON.stringify({ claude: { model: 'sonnet' } })).config.claude, { ...DEFAULTS.claude, model: 'sonnet' })
+  assert.deepEqual(readConfig(JSON.stringify({ claude: { economy: { effort: 'max' } } })).config.claude.economy, { model: 'sonnet', effort: 'max' })
+  assert.deepEqual(readConfig(JSON.stringify({ claude: { weekAhead: null, effort: null }, prereview: { enabled: false } })).problems, [])
+  const text = readConfig(JSON.stringify({
+    claude: { effort: 'huge', switchAt: 99, stopAt: 90, weekAhead: 'x', reviewByRisk: 'yes', economy: { model: '' } },
+    spares: 1, prereview: { minLines: -1 },
+  })).problems.join('\n')
+  for (const expected of [/"claude\.effort" must be one of low, medium, high, xhigh, max/, /switchAt no higher than stopAt/, /"claude\.weekAhead"/,
+    /"claude\.reviewByRisk"/, /"claude\.economy\.model" must name a model/, /"spares" must be true or false/, /"prereview" must be/]) {
+    assert.match(text, expected)
+  }
+})
+
 test('mistakes in the config are named, one by one', () => {
   assert.match(readConfig('{ nope').problems[0], /not valid JSON/)
   const { problems } = readConfig(JSON.stringify({

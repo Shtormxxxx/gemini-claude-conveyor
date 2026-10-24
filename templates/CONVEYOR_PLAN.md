@@ -1,6 +1,7 @@
 # Plan: <one line — what changes for the people who use the project>
 
 STATUS: GO
+REVIEW: deep | standard
 
 ## Goal
 <Two or three sentences: the result, and how to tell that it works.>

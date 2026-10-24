@@ -90,14 +90,28 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     const doctor = conveyor(['doctor'])
     assert.match(lastLine(doctor.out), /READY/, doctor.out)
 
+    // The crew is asked before anything else, and must be one of the configured sizes.
+    const asked = conveyor(['plan', 'Greet people'])
+    assert.match(lastLine(asked.out), /ASK — ask the owner how many working accounts this run uses: 4, 8, 9/)
+    assert.equal(asked.code, 5)
+    assert.match(lastLine(conveyor(['plan', '--crew', '5', 'Greet people']).out), /STOP — a crew of 5 is not one of the sizes/)
+
     // A run starts only from a clean folder.
     writeFileSync(join(project, 'stray.txt'), 'x')
-    assert.match(lastLine(conveyor(['plan', 'Greet people']).out), /STOP — the folder has changes/)
+    assert.match(lastLine(conveyor(['plan', '--crew', '4', 'Greet people']).out), /STOP — the folder has changes/)
     rmSync(join(project, 'stray.txt'))
 
-    // Plan: the prompt carries the attached file and the answer format; the quota counts it.
-    const planned = conveyor(['plan', 'Greet people'])
+    // Plan for a crew of 4: Claude is offered exactly those tabs; the prompt carries the attached file
+    // and the answer format; the quota counts it.
+    const log = join(tmp, 'claude.log')
+    const planned = conveyor(['plan', '--crew', '4', 'Greet people'], { STUB_LOG: log })
     assert.match(lastLine(planned.out), /NEXT/, planned.out)
+    const toClaude = JSON.parse(readFileSync(log, 'utf8').trim().split('\n').pop()).input
+    assert.match(toClaude, /4 browser tabs \(ARGON_1, ARGON_2, ARGON_3, ARGON_4\)/)
+    assert.match(toClaude, /## PROMPT_FOR_ARGON_4\nNONE/)
+    assert.doesNotMatch(toClaude, /PROMPT_FOR_ARGON_5/)
+    assert.match(planned.out, /crew of 4/)
+    assert.match(planned.out, /argon-1\.prompt\.md → ARGON_1 https:\/\/gemini\.google\.com\/u\/1\/app/)
     const prompt = readFileSync(join(project, 'conveyor/run/out/argon-1.prompt.md'), 'utf8')
     assert.match(prompt, /demo: React \+ Vite/)
     assert.match(prompt, /=== FILE: src\/app\.js ===\n```js\nexport const greet/)
@@ -147,7 +161,7 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.equal(git(project, 'status', '--porcelain').out.trim(), '')
 
     // A protected file, and a credential, ship only with the owner's word.
-    assert.match(lastLine(conveyor(['plan', 'Bump the version']).out), /NEXT/)
+    assert.match(lastLine(conveyor(['plan', '--crew', '9', 'Bump the version']).out), /NEXT/)
     writeFileSync(join(inbox, 'argon-1.md'), [
       '=== FILE: package.json ===', '```json', '{ "name": "demo", "version": "2.0.0" }', '```',
       '=== FILE: api/key.js ===', '```js', `export const KEY = "AIza${'k'.repeat(35)}"`, '```',
@@ -164,13 +178,21 @@ test('a whole run, and every gate on the way', { timeout: 240_000 }, () => {
     assert.match(lastLine(owned.out), /SHIPPED/, owned.out)
     assert.match(owned.out, /DEPLOYED-API/)
 
-    // The quota guard: a blocked tab's brief goes to the conductor instead.
-    assert.match(lastLine(conveyor(['status', '--block', 'argon_1']).out), /1 of 2 tabs take prompts/)
-    const rerouted = conveyor(['plan', 'Greet again'])
+    // The quota guard: a blocked tab's brief moves to a free tab of the same crew; with the whole crew
+    // blocked, to the conductor. The tabs outside the crew stay untouched.
+    const status = conveyor(['status', '--block', 'argon_1'])
+    assert.match(lastLine(status.out), /8 of 9 tabs take prompts/)
+    assert.match(status.out, /Crews: 4 \(ARGON_1…ARGON_4\) · 8 \(ARGON_1…ARGON_8\) · 9 \(ARGON_1…ARGON_9\) — asked every run/)
+    const moved = conveyor(['plan', '--crew', '4', 'Greet again'])
+    assert.match(moved.out, /argon-1\.prompt\.md → ARGON_2 https:\/\/gemini\.google\.com\/u\/2\/app .*moved from ARGON_1/)
+    conveyor(['abort'])
+    conveyor(['status', '--block', 'ARGON_2', '--block', 'ARGON_3', '--block', 'ARGON_4'])
+    const rerouted = conveyor(['plan', '--crew', '4', 'Greet again'])
     assert.match(rerouted.out, /argon-1\.prompt\.md → YOU, on your fast Gemini model/)
-    assert.match(lastLine(conveyor(['status', '--unblock', 'ARGON_1']).out), /2 of 2/)
+    assert.match(lastLine(conveyor(['status', '--unblock', 'ARGON_1', '--unblock', 'ARGON_2', '--unblock', 'ARGON_3', '--unblock', 'ARGON_4']).out), /9 of 9/)
 
     // Abort puts the run's changes aside and leaves the folder as it was.
+    assert.match(lastLine(conveyor(['plan', '--crew', '8', 'Greet once more']).out), /NEXT/)
     writeFileSync(join(project, 'src/app.js'), 'export const greet = () => "changed"\n')
     const aborted = conveyor(['abort'])
     assert.match(lastLine(aborted.out), /ABORTED/)
@@ -196,6 +218,24 @@ test('the source checkout only installs, and says how', () => {
     assert.match(lastLine(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', join(tmp, 'repo'), '--no-ecc']).out), /is not a git repository/)
     git(join(tmp, 'repo'), 'init', '-q')
     assert.match(lastLine(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', join(tmp, 'repo', 'sub'), '--no-ecc']).out), /is inside the repository/)
+
+    // Updating an install whose config still has 1.0's two tabs brings the nine working accounts in,
+    // and keeps everything else the owner set.
+    const repo = join(tmp, 'repo')
+    assert.match(lastLine(sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', repo, '--no-ecc']).out), /INSTALLED/)
+    const configPath = join(repo, 'conveyor', 'conveyor.config.json')
+    const v1 = JSON.parse(readFileSync(configPath, 'utf8'))
+    delete v1.crews
+    delete v1.crew
+    v1.tabs = [1, 2].map(n => ({ id: `ARGON_${n}`, url: `https://gemini.google.com/u/${n}/app`, model: 'Gemini 4 Argon' }))
+    v1.project = 'Kept as the owner wrote it.'
+    writeFileSync(configPath, JSON.stringify(v1))
+    const updated = sh(REPO, process.execPath, ['bin/conveyor.mjs', 'init', repo, '--no-ecc'])
+    assert.match(updated.out, /two Gemini tabs became nine working accounts/)
+    const v11 = JSON.parse(readFileSync(configPath, 'utf8'))
+    assert.equal(v11.tabs.length, 9)
+    assert.deepEqual(v11.crews, [4, 8, 9])
+    assert.equal(v11.project, 'Kept as the owner wrote it.')
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

@@ -7,7 +7,7 @@
 //   doctor       what is ready and what is missing
 //   setup        install ECC for Antigravity (init and plan do it on their own when it is missing)
 //   status       the quota guard: what each tab has left; --block / --unblock / --reset <TAB>
-//   plan         Claude writes the plan; each tab's prompt gets the files it needs pasted in
+//   plan         --crew N: Claude writes the plan for N working accounts; each prompt gets its files
 //   apply        writes the files from the answers saved in conveyor/run/inbox/
 //   diff         the project's checks, then the run's diff → conveyor/run/FOR_REVIEW.md
 //   review       Claude reviews that diff, fixes in place, writes the verdict
@@ -23,11 +23,12 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULTS, guards, readConfig } from '../lib/config.mjs'
 import {
-  block, deployFor, fill, fingerprint, firstMatch, ownerReasons, projectPath, quotaView, readAnswer,
-  readBrief, readPlan, readVerdict, recordSent, routeFor, scanSecrets, section, slug, tabPrompt, tail,
+  assignTabs, block, deployFor, fill, fingerprint, firstMatch, ownerReasons, projectPath, quotaView,
+  readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent, scanSecrets, section, slug,
+  tabPrompt, tail,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.0.0'
+const VERSION = '1.1.0'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = resolve(HERE, '..')
@@ -218,6 +219,16 @@ function init(args) {
   for (const part of ['bin', 'lib']) cpSync(join(TOOL, part), join(dest, part), { recursive: true })
   for (const name of ['CONVEYOR_PLAN.md', 'FOR_REVIEW.md']) cpSync(join(TOOL, 'templates', name), join(dest, 'templates', name))
   cpSync(join(TOOL, 'templates', 'README.project.md'), join(dest, 'README.md'))
+  const configPath = join(dest, 'conveyor.config.json')
+  if (updating) {
+    // 1.0 shipped two Gemini tabs; a config still on exactly those gets the nine working accounts.
+    const old = JSON.parse(read(configPath))
+    const twoTabs = Array.isArray(old.tabs) && old.tabs.length === 2 && old.tabs.every((t, i) => t.id === `ARGON_${i + 1}` && t.url === `https://gemini.google.com/u/${i + 1}/app`)
+    if (twoTabs && old.crews === undefined) {
+      write(configPath, JSON.stringify({ ...old, tabs: DEFAULTS.tabs, crews: DEFAULTS.crews, crew: DEFAULTS.crew }, null, 2) + '\n')
+      console.log('conveyor.config.json: the two Gemini tabs became nine working accounts, run with a crew of 4, 8 or 9.\n')
+    }
+  }
   if (!updating) {
     const guess = detect(target)
     const config = { ...DEFAULTS, project: guess.project, checks: guess.checks }
@@ -308,8 +319,16 @@ function setup() {
 
 // ── plan ────────────────────────────────────────────────────────────────────────────────────────
 
-function plan(args) {
+function plan(argv) {
   const { config, guard, windowMs } = project()
+  const { crew: asked, rest: args } = readCrewArg(argv)
+  const size = asked ?? config.crew
+  const sizes = config.crews.join(', ')
+  if (size === null) {
+    done(`ASK — ask the owner how many working accounts this run uses: ${sizes}. Then run ${CMD} plan --crew <N>`, 5)
+  }
+  if (!config.crews.includes(size)) stop(`a crew of ${size} is not one of the sizes in conveyor.config.json: ${sizes}`)
+  const crew = config.tabs.slice(0, size)
   if (args.length) write(FILES.task, args.join(' ') + '\n')
   const task = read(FILES.task).trim()
   if (!task) stop(`no task: write it into conveyor/run/TASK.md, or pass it: ${CMD} plan "<task>"`)
@@ -326,11 +345,11 @@ function plan(args) {
   mkdirSync(OUT, { recursive: true })
   mkdirSync(INBOX, { recursive: true })
   const base = git('rev-parse', 'HEAD').trim()
-  saveState({ task, base, startedAt: new Date().toISOString() })
-  history('start', { task })
+  saveState({ task, base, crew: size, startedAt: new Date().toISOString() })
+  history('start', { task, crew: size })
 
-  const ids = config.tabs.map(t => t.id)
-  const tabSections = config.tabs.map((tab, i) => i === 0
+  const ids = crew.map(t => t.id)
+  const tabSections = crew.map((tab, i) => i === 0
     ? `## PROMPT_FOR_${tab.id}\nWEIGHT: normal\nATTACH: path/one, path/two\n\n<A complete brief for a model that cannot see the project: what to build, the exact names,\nprops and data shapes, where it is used, what must not change, the conventions that matter here.\nThe program pastes the ATTACHed files and the answer format in after this text.>`
     : `## PROMPT_FOR_${tab.id}\nNONE`).join('\n\n')
 
@@ -349,18 +368,21 @@ ${task}
 2. Write conveyor/run/CONVEYOR_PLAN.md following the template at the end exactly: a program reads its
    headings and its STATUS, WEIGHT and ATTACH lines. Write the plan in English.
 3. Do not write code yourself beyond a line or two in INSTRUCTIONS_FOR_FLASH. The code is written by
-   models in browser tabs (${ids.join(', ')}) that cannot see the project, so each PROMPT_FOR_<TAB>
-   must be complete on its own: the goal, the exact behaviour, the names, props and data shapes,
-   where it is used, what must not change, and the conventions that matter for it.
+   models in ${size} browser tabs (${ids.join(', ')}) that cannot see the project and work at the
+   same time, so each PROMPT_FOR_<TAB> must be complete on its own: the goal, the exact behaviour,
+   the names, props and data shapes, where it is used, what must not change, and the conventions
+   that matter for it.
 4. List every existing file a prompt must see or change on its ATTACH line. The program pastes their
    current contents in after your text; never copy file contents into the plan yourself, and attach
    only what is needed — every line costs the reader.
 5. Give each prompt a WEIGHT line: heavy when it needs real reasoning (tricky logic, security, a large
    component), normal otherwise. When a tab is out of quota a heavy brief goes to a Claude model and
    a normal one to a fast model, so mark heavy only what needs it.
-6. Two tabs must never change the same file. For a small task use the first tab only and write NONE
-   under the others; for a change of a few lines write NONE under every tab and give the change,
-   exactly, in INSTRUCTIONS_FOR_FLASH.
+6. Split the work into as many independent briefs as it naturally divides into — up to ${size}, never
+   more than the work needs: a brief per file or per group of closely tied files. Two tabs must never
+   change the same file. Fill the tabs from ${ids[0]} upward and write NONE under the rest. For a
+   change of a few lines write NONE under every tab and give the change, exactly, in
+   INSTRUCTIONS_FOR_FLASH.
 7. Never attach, quote or mention the contents of .env files, keys or tokens.
 8. Write STATUS: ESCALATE instead of STATUS: GO, with the question under "## Question", when the
    owner must decide first: anything that costs money, database or access rules, deleting user data,
@@ -386,43 +408,50 @@ ${fill(read(join(TOOL, 'templates', 'CONVEYOR_PLAN.md')), { TAB_SECTIONS: tabSec
   }
   if (p.status !== 'GO') stop(`the plan has no "STATUS: GO" line — run ${CMD} plan again`)
 
-  let quota = loadQuota()
-  const view = quotaView(quota, Date.now(), { ids, budget: config.quota.budget, windowMs })
-  const routes = {}
-  const lines = []
-  for (const tab of config.tabs) {
+  // Every brief the plan wrote — one under a tab outside the crew is moved into it by assignTabs.
+  const allIds = config.tabs.map(t => t.id)
+  const briefs = config.tabs.flatMap(tab => {
     const brief = readBrief(section(p, `PROMPT_FOR_${tab.id}`))
-    if (!brief) continue
+    return brief ? [{ id: tab.id, ...brief }] : []
+  })
+  let quota = loadQuota()
+  const view = quotaView(quota, Date.now(), { ids: allIds, budget: config.quota.budget, windowMs })
+  const routes = assignTabs(briefs, view, ids)
+  const sentTo = {}
+  const lines = []
+  for (const brief of briefs) {
     const files = []
     for (const raw of brief.attach) {
       const path = projectPath(raw)
-      if (!path.ok) stop(`${tab.id} attaches ${raw}: ${path.reason}`)
-      if (firstMatch(guard.secrets, path.path)) stop(`${tab.id} attaches ${path.path}, which may hold secrets`)
+      if (!path.ok) stop(`${brief.id} attaches ${raw}: ${path.reason}`)
+      if (firstMatch(guard.secrets, path.path)) stop(`${brief.id} attaches ${path.path}, which may hold secrets`)
       const full = join(ROOT, path.path)
       files.push(existsSync(full) ? { path: path.path, content: readFileSync(full, 'utf8') } : { path: path.path, missing: true })
     }
     const text = tabPrompt({ project: config.project, prompt: brief.prompt, files })
-    const file = `conveyor/run/out/${slug(tab.id)}.prompt.md`
+    const file = `conveyor/run/out/${slug(brief.id)}.prompt.md`
     write(join(ROOT, file), text)
-    const route = routeFor(tab.id, brief.heavy, view)
-    routes[tab.id] = route
-    const size = `${Math.round(text.length / 1024)} KB`
+    const kb = `${Math.round(text.length / 1024)} KB`
+    const { route, tab: tabId } = routes[brief.id]
     if (route === 'TAB') {
-      quota = recordSent(quota, tab.id, Date.now(), windowMs)
-      lines.push(`  ${file} → ${tab.url} (${tab.model || 'its model'})  [${size}; ${view[tab.id].used + 1} of ${config.quota.budget} in the window]`)
+      const tab = config.tabs.find(t => t.id === tabId)
+      quota = recordSent(quota, tabId, Date.now(), windowMs)
+      sentTo[tabId] = (sentTo[tabId] || 0) + 1
+      const moved = tabId === brief.id ? '' : `, moved from ${brief.id}`
+      lines.push(`  ${file} → ${tabId} ${tab.url} (${tab.model || 'its model'})  [${kb}; ${view[tabId].used + sentTo[tabId]} of ${config.quota.budget} in the window${moved}]`)
     } else {
       lines.push(`  ${file} → YOU, ${route === 'CLAUDE'
         ? 'on a Claude model in Antigravity (Sonnet Thinking; Opus Thinking if very hard)'
-        : 'on your fast Gemini model'}  [${size}; ${tab.id} is held back until ${clock(view[tab.id].freesAt)}]`)
+        : 'on your fast Gemini model'}  [${kb}; no tab in the crew has room]`)
     }
   }
   saveQuota(quota)
   saveState({ routes })
 
-  console.log(`\nPlan: ${p.title}`)
+  console.log(`\nPlan: ${p.title}  (crew of ${size})`)
   if (!lines.length) done(`NEXT — no tabs this time: do INSTRUCTIONS_FOR_FLASH, then ${CMD} diff`)
   console.log(`Where each prompt goes:\n${lines.join('\n')}`)
-  done(`NEXT — send each prompt where it says (a tab, or write the answer yourself in the same format); save each whole answer as conveyor/run/inbox/<tab>.md (e.g. ${slug(ids[0])}.md), then ${CMD} apply`)
+  done(`NEXT — send each prompt where it says (a tab, or write the answer yourself in the same format); save each whole answer under the prompt's name, as conveyor/run/inbox/<name>.md (${slug(briefs[0].id)}.prompt.md → ${slug(briefs[0].id)}.md), then ${CMD} apply`)
 }
 
 // ── apply ───────────────────────────────────────────────────────────────────────────────────────
@@ -466,9 +495,10 @@ function apply(args) {
   const counted = new Set(state.countedFixes || [])
   let quota = loadQuota()
   for (const source of sources.filter(isFix)) {
-    const tab = config.tabs.find(t => slug(t.id) === stem(source))
-    if (!tab || counted.has(rel(source)) || state.routes?.[tab.id] !== 'TAB') continue
-    quota = recordSent(quota, tab.id, Date.now(), windowMs)
+    const brief = config.tabs.find(t => slug(t.id) === stem(source))
+    const route = brief && state.routes?.[brief.id]
+    if (!route || counted.has(rel(source)) || route.route !== 'TAB') continue
+    quota = recordSent(quota, route.tab, Date.now(), windowMs)
     counted.add(rel(source))
   }
   saveQuota(quota)
@@ -681,12 +711,13 @@ function status(args) {
   saveQuota(quota)
 
   const view = quotaView(quota, now, { ids, budget: config.quota.budget, windowMs })
-  console.log(`Tabs, counted by the conveyor over the last ${config.quota.windowHours} hours:`)
+  console.log(`Crews: ${config.crews.map(n => `${n} (${ids[0]}…${ids[n - 1]})`).join(' · ')}${config.crew ? ` — fixed at ${config.crew}` : ' — asked every run'}\n`)
+  console.log(`Working accounts, counted by the conveyor over the last ${config.quota.windowHours} hours:`)
   for (const tab of config.tabs) {
     const v = view[tab.id]
     console.log(`  ${tab.id}  ${tab.url}  ${v.used} of ${v.budget} heavy requests — ${v.available
       ? 'takes prompts'
-      : `held back until ${clock(v.freesAt)}: its briefs go to the conductor's fast model, heavy ones to Claude`}`)
+      : `held back until ${clock(v.freesAt)}: its briefs go to another tab in the crew, or to the conductor`}`)
   }
   console.log('\nThe conductor itself: when Antigravity\'s View Usage shows 30% or less of the Gemini five-hour')
   console.log('limit left, it does this run\'s work on a Claude model.')
@@ -718,7 +749,7 @@ ${INSTALLED ? `In this project:  ${CMD} <command>` : 'From this repository:  nod
 
   init [dir]   install into a project            doctor    what is ready and what is missing
   setup        install ECC for Antigravity        status    quota of each tab; --block/--unblock/--reset <TAB>
-  plan         Claude writes the plan             apply     write the files from the tabs' answers
+  plan --crew N Claude plans for N accounts        apply     write the files from the tabs' answers
   diff         checks + the diff for review       review    Claude reviews and gives a verdict
   ship         checks, commit, push, deploy       abort     put the run's changes aside
 

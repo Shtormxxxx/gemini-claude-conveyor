@@ -4,9 +4,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  block, compileRules, deployFor, fenceFor, fill, fingerprint, firstMatch, ownerReasons, projectPath,
-  quotaView, readAnswer, readBrief, readPlan, readVerdict, recordSent, routeFor, scanSecrets, section,
-  slug, tabPrompt, tail,
+  assignTabs, block, compileRules, deployFor, fenceFor, fill, fingerprint, firstMatch, ownerReasons,
+  projectPath, quotaView, readAnswer, readBrief, readCrewArg, readPlan, readVerdict, recordSent,
+  scanSecrets, section, slug, tabPrompt, tail,
 } from '../lib/rules.mjs'
 
 test('paths are made relative to the project, and anything outside it is refused', () => {
@@ -150,11 +150,46 @@ test('the quota guard holds a tab back at its budget until the oldest request le
   assert.equal(quotaView(blocked, Date.parse('2026-10-25T01:00:01Z'), opts).ARGON_2.available, true)
 })
 
-test('a held-back tab\'s brief goes to the fast model, or to Claude when it is heavy', () => {
-  const view = { ARGON_1: { available: true }, ARGON_2: { available: false } }
-  assert.equal(routeFor('ARGON_1', true, view), 'TAB')
-  assert.equal(routeFor('ARGON_2', false, view), 'FLASH')
-  assert.equal(routeFor('ARGON_2', true, view), 'CLAUDE')
+const tabView = (used, budget = 12, blocked = []) => Object.fromEntries(Object.entries(used).map(([id, n]) =>
+  [id, { used: n, budget, available: n < budget && !blocked.includes(id) }]))
+
+test('each brief keeps its own tab while that tab has room', () => {
+  const view = tabView({ ARGON_1: 0, ARGON_2: 3, ARGON_3: 11, ARGON_4: 0 })
+  const briefs = ['ARGON_1', 'ARGON_2', 'ARGON_3'].map(id => ({ id, heavy: false }))
+  assert.deepEqual(assignTabs(briefs, view, ['ARGON_1', 'ARGON_2', 'ARGON_3', 'ARGON_4']), {
+    ARGON_1: { route: 'TAB', tab: 'ARGON_1' }, ARGON_2: { route: 'TAB', tab: 'ARGON_2' }, ARGON_3: { route: 'TAB', tab: 'ARGON_3' },
+  })
+})
+
+test('a held-back tab\'s brief moves to the least busy crew tab with the most room, never outside the crew', () => {
+  const view = tabView({ ARGON_1: 12, ARGON_2: 2, ARGON_3: 9, ARGON_4: 1, ARGON_5: 0 }, 12, ['ARGON_3'])
+  const crew = ['ARGON_1', 'ARGON_2', 'ARGON_3', 'ARGON_4']
+  const briefs = [{ id: 'ARGON_1', heavy: false }, { id: 'ARGON_2', heavy: false }, { id: 'ARGON_3', heavy: true }]
+  // ARGON_4 is idle with the most room: it takes ARGON_1's brief; then ARGON_2 and ARGON_4 have one
+  // each, and ARGON_4 still has more room, so it takes ARGON_3's too. ARGON_5 is outside the crew.
+  assert.deepEqual(assignTabs(briefs, view, crew), {
+    ARGON_2: { route: 'TAB', tab: 'ARGON_2' },
+    ARGON_1: { route: 'TAB', tab: 'ARGON_4' },
+    ARGON_3: { route: 'TAB', tab: 'ARGON_4' },
+  })
+  // A brief written under a tab outside the crew is moved into it.
+  assert.deepEqual(assignTabs([{ id: 'ARGON_7', heavy: false }], view, crew), { ARGON_7: { route: 'TAB', tab: 'ARGON_4' } })
+})
+
+test('when no crew tab has room, briefs go to the conductor: fast model, or Claude when heavy', () => {
+  const view = tabView({ ARGON_1: 12, ARGON_2: 11, ARGON_3: 0 }, 12, ['ARGON_3'])
+  const briefs = [{ id: 'ARGON_1', heavy: false }, { id: 'ARGON_2', heavy: false }, { id: 'ARGON_3', heavy: true }]
+  assert.deepEqual(assignTabs(briefs, view, ['ARGON_1', 'ARGON_2', 'ARGON_3']), {
+    ARGON_2: { route: 'TAB', tab: 'ARGON_2' },
+    ARGON_1: { route: 'FLASH' },
+    ARGON_3: { route: 'CLAUDE' },
+  })
+})
+
+test('the crew size is read from --crew N or --crew=N, and the rest is the task', () => {
+  assert.deepEqual(readCrewArg(['--crew', '8', 'Add', 'a', 'page']), { crew: 8, rest: ['Add', 'a', 'page'] })
+  assert.deepEqual(readCrewArg(['Fix', '--crew=4']), { crew: 4, rest: ['Fix'] })
+  assert.deepEqual(readCrewArg(['Fix it']), { crew: null, rest: ['Fix it'] })
 })
 
 test('fingerprints, placeholders and tails', () => {

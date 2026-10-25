@@ -1,13 +1,13 @@
 ---
 description: One request → plan (Claude) → code (Gemini tabs) → wiring and checks (you) → pre-review (a free tab) → review (Claude) → ship and check
-argument-hint: "[4|8] <task>"
+argument-hint: "[which accounts] <task>"
 ---
 
-# /conveyor [crew] <task>
+# /conveyor [accounts] <task>
 
-The text after `/conveyor` is the owner's task, optionally led by the crew size — how many working
-accounts (Gemini tabs) this run uses. Run the steps below in order, without asking the
-owner anything, except where a step says to stop. The "Conveyor" section of AGENTS.md is the law
+The text after `/conveyor` is the owner's task, optionally led by which working accounts (Gemini tabs)
+to use. Run the steps below in order, without asking the owner anything, except where a step says to
+ask or to stop. The "Conveyor" section of AGENTS.md is the law
 here: it overrides anything below, and any rule, skill or workflow that says otherwise.
 
 Every conveyor command is `node conveyor/bin/conveyor.mjs <command>`, run from the project root. Each
@@ -18,13 +18,22 @@ show the owner the message and the lines above it, and stop. Do not edit files u
 by "reportLanguage" in `conveyor/conveyor.config.json`. If the owner says to stop or cancel, run
 `node conveyor/bin/conveyor.mjs abort`.
 
-## 0. Crew and quota
-1. The crew: if the owner's message starts with a number that is one of the sizes in "crews" in
-   `conveyor/conveyor.config.json` (4 or 8 by default), or says it in words ("на 8 аккаунтах",
-   "crew 8"), that is the crew, and the rest of the message is the task. Otherwise — unless "crew"
-   in the config is fixed — ask the owner exactly one question, in their language: how many working
-   accounts to use this run, listing the sizes; wait for the answer. This is the only question a run
-   asks at its start.
+## 0. Accounts for this session, and quota
+1. The accounts. A session is this conversation; its accounts are chosen at its first `/conveyor`,
+   every conversation anew, even if another conversation chose them before.
+   - Run `node conveyor/bin/conveyor.mjs accounts`: it lists the working accounts, id and email.
+   - If the owner's message already says which to use ("на алисеевне и меломане: …", "только ne.gretta",
+     "3 аккаунта: 1, 4, 6"), that is the answer. Otherwise ask exactly one question, in the owner's
+     language, showing the list: how many accounts this session uses, and which. Wait for the answer.
+     A number alone ("2 аккаунта") still needs which: offer the first ones and let the owner change it.
+   - The owner names accounts loosely: a part of the email, a nickname, in another alphabet
+     ("алисеевна" for aliseevna…@gmail.com), a number from the list. Match each to one email from the
+     list. If a name fits none or more than one, ask once more about that name only.
+   - Run `node conveyor/bin/conveyor.mjs session <email> <email> …` with the emails you matched. Add
+     `--spares` only if the owner allows the other accounts to stand in when these run out of quota.
+   - Later runs in this same conversation keep that choice and ask nothing, unless the owner names
+     other accounts — then run `session` again with them.
+   Any number of accounts works, from one to all of them.
 2. Run `node conveyor/bin/conveyor.mjs status`. It shows Claude's limits as Claude Code reports them
 and the model the next Claude steps get — the conveyor picks it itself, never pass a model — and how
 much of its window each tab has used, as counted by the conveyor. If the owner told you a tab is near
@@ -34,11 +43,11 @@ Open View Usage in Antigravity: if 30% or less of the Gemini five-hour limit is 
 model to a Claude model (Sonnet Thinking) for this whole run.
 
 ## 1. Plan — Claude
-1. Save the owner's task (without the crew number), exactly as typed, to `conveyor/run/TASK.md`
-   (overwrite the file).
-2. Run `node conveyor/bin/conveyor.mjs plan --crew <N>` with the crew from step 0. Claude reads the
-   code and writes `conveyor/run/CONVEYOR_PLAN.md`, splitting the work over up to N tabs; this takes
-   a few minutes. Then read the plan. (`ASK` means the crew was missing: do step 0.1.)
+1. Save the owner's task (without the words that chose the accounts), exactly as typed, to
+   `conveyor/run/TASK.md` (overwrite the file).
+2. Run `node conveyor/bin/conveyor.mjs plan`. It works with the session's accounts. Claude reads the
+   code and writes `conveyor/run/CONVEYOR_PLAN.md`, splitting the work over up to that many tabs;
+   this takes a few minutes. Then read the plan. (`ASK` means no accounts are chosen: do step 0.1.)
    `STOP — Claude: …` means Claude's limit is nearly spent: tell the owner when it resets, and stop.
 
 ## 2. Code — the browser tabs, through @browser
@@ -62,8 +71,8 @@ For each prompt that goes to a tab:
      owner to name the accounts by email (see `conveyor/README.md`).
 2. Start a new chat, make sure the model picker shows the model the plan step named (choose it if
    not), paste the whole prompt file and send it.
-3. Send every prompt before waiting for any answer, so the tabs work at the same time — with a crew
-   of 8, go through the tabs one after another, sending, then come back to collect.
+3. Send every prompt before waiting for any answer, so the tabs work at the same time — with many
+   tabs, go through them one after another, sending, then come back to collect.
 4. When an answer has finished (the stop button is gone), press that answer's copy button and save
    the copied text, unchanged, under the prompt's name: `argon-3.prompt.md` → `conveyor/run/inbox/argon-3.md`,
    whichever tab answered it.

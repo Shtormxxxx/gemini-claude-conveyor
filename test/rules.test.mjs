@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import {
   assignTabs, block, claudeChoice, compileRules, deployFor, fenceFor, fileMap, fill, fingerprint, firstMatch,
   ownerReasons, prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream,
-  readCrewArg, readLimits, readPlan, readPrereview, readVerdict, recordSent, scanSecrets, section, slug,
+  pickAccounts, readCrewArg, readLimits, readPlan, readPrereview, readVerdict, recordSent, scanSecrets, section, slug,
   tabPrompt, tail, positionOf, tabLabel, tabUrl, scanEmails, weekPace, weekPassed,
 } from '../lib/rules.mjs'
 
@@ -352,9 +352,26 @@ test('a tab named by email opens Gemini for that account, wherever Chrome has pu
 })
 
 test('the crew size is read from --crew N or --crew=N, and the rest is the task', () => {
-  assert.deepEqual(readCrewArg(['--crew', '8', 'Add', 'a', 'page']), { crew: 8, rest: ['Add', 'a', 'page'] })
-  assert.deepEqual(readCrewArg(['Fix', '--crew=4']), { crew: 4, rest: ['Fix'] })
-  assert.deepEqual(readCrewArg(['Fix it']), { crew: null, rest: ['Fix it'] })
+  assert.deepEqual(readCrewArg(['--crew', '8', 'Add', 'a', 'page']), { crew: 8, accounts: null, rest: ['Add', 'a', 'page'] })
+  assert.deepEqual(readCrewArg(['Fix', '--crew=1']), { crew: 1, accounts: null, rest: ['Fix'] })
+  assert.deepEqual(readCrewArg(['--accounts', 'aliseevna, meloman', 'Fix']), { crew: null, accounts: ['aliseevna', 'meloman'], rest: ['Fix'] })
+  assert.deepEqual(readCrewArg(['--accounts=3', 'Fix it']), { crew: null, accounts: ['3'], rest: ['Fix it'] })
+  assert.deepEqual(readCrewArg(['Fix it']), { crew: null, accounts: null, rest: ['Fix it'] })
+})
+
+test('the owner names the session\'s accounts loosely: a part of the email, the email, an id or a number', () => {
+  const tabs = ['aliseevna.k@gmail.com', 'meloman77@gmail.com', 'ne.gretta@gmail.com', 'gretta.work@gmail.com']
+    .map((account, i) => ({ id: `ARGON_${i + 1}`, account }))
+  assert.deepEqual(pickAccounts(tabs, ['aliseevna', 'MELOMAN']), { ids: ['ARGON_1', 'ARGON_2'], problems: [] })
+  assert.deepEqual(pickAccounts(tabs, ['ne.gretta']), { ids: ['ARGON_3'], problems: [] })
+  assert.deepEqual(pickAccounts(tabs, ['4, argon_2', 'ne.gretta@gmail.com']), { ids: ['ARGON_4', 'ARGON_2', 'ARGON_3'], problems: [] })
+  // What fits two accounts, or none, or one already named, goes back to the owner.
+  assert.match(pickAccounts(tabs, ['gretta']).problems[0], /"gretta" fits ne\.gretta@gmail\.com, gretta\.work@gmail\.com — which one\?/)
+  assert.match(pickAccounts(tabs, ['nobody']).problems[0], /fits no working account/)
+  assert.match(pickAccounts(tabs, ['meloman', '2']).problems[0], /named already/)
+  assert.match(pickAccounts(tabs, []).problems[0], /no account was named/)
+  // The part after the @ names nobody: every account shares it.
+  assert.match(pickAccounts(tabs, ['gmail']).problems[0], /fits no working account/)
 })
 
 test('fingerprints, placeholders and tails', () => {

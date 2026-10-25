@@ -8,7 +8,8 @@
 //   setup        install ECC for Antigravity (init and plan do it on their own when it is missing)
 //   status       Claude's limits and the tabs' quota; --block / --unblock / --reset <TAB>
 //   accounts     the working accounts by email, in order: accounts a@gmail.com b@gmail.com …
-//   plan         --crew N: Claude writes the plan for N working accounts; each prompt gets its files
+//   session      which of them this session uses, by name: session aliseevna meloman (--spares, --clear)
+//   plan         Claude writes the plan for the session's accounts (or --accounts a,b / --crew N)
 //   apply        writes the files from the answers saved in conveyor/run/inbox/
 //   diff         the project's checks, then the run's diff → conveyor/run/FOR_REVIEW.md
 //   prereview    a working account that wrote none of the run reads the diff first (--skip: don't)
@@ -27,12 +28,12 @@ import { fileURLToPath } from 'node:url'
 import { DEFAULTS, guards, readConfig } from '../lib/config.mjs'
 import {
   assignTabs, block, claudeChoice, deployFor, fileMap, fill, fingerprint, firstMatch, ownerReasons,
-  prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream, readCrewArg,
+  pickAccounts, prereviewPrompt, prereviewTab, projectPath, quotaView, readAnswer, readBrief, readClaudeStream, readCrewArg,
   readPlan, readPrereview, readVerdict, recordSent, scanEmails, scanSecrets, section, slug, tabLabel, tabPrompt,
   tail, weekPace, EMAIL,
 } from '../lib/rules.mjs'
 
-const VERSION = '1.5.1'
+const VERSION = '1.6.0'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SOURCE_TOOL = resolve(HERE, '..')
@@ -70,6 +71,7 @@ const FILES = {
   state: join(RUN, 'state.json'),
   quota: join(RUN, 'quota_state.json'),
   claude: join(RUN, 'claude_usage.json'),
+  session: join(RUN, 'session.json'),
   history: join(RUN, 'history.jsonl'),
   prereviewPrompt: join(OUT, 'prereview.prompt.md'),
   prereviewAnswer: join(INBOX, 'prereview.md'),
@@ -425,7 +427,13 @@ function init(args) {
     }
     if (twoTabs && old.crews === undefined) {
       write(configPath, JSON.stringify({ ...old, tabs: DEFAULTS.tabs, crews: DEFAULTS.crews, crew: DEFAULTS.crew }, null, 2) + '\n')
-      console.log('conveyor.config.json: the two Gemini tabs became eight working accounts, run with a crew of 4 or 8.\n')
+      console.log('conveyor.config.json: the two Gemini tabs became eight working accounts.\n')
+    }
+    // Until 1.6 a run could use only 4 or 8 accounts; that old default now means any number.
+    const sized = JSON.parse(read(configPath))
+    if (JSON.stringify(sized.crews) === '[4,8]') {
+      write(configPath, JSON.stringify({ ...sized, crews: null }, null, 2) + '\n')
+      console.log('conveyor.config.json: a run may now use any number of working accounts ("crews": null).\n')
     }
     // 1.5's settings — Claude's economy model and limits guard, the pre-review, the spares — are
     // written in with their defaults, so the owner sees them; what the owner set stays.
@@ -446,10 +454,10 @@ function init(args) {
     const config = { ...DEFAULTS, project: guess.project, checks: guess.checks }
     write(join(dest, 'conveyor.config.json'), JSON.stringify(config, null, 2) + '\n')
   }
-  cpSync(join(TOOL, 'templates', 'workflow.md'), join(target, '.agents', 'workflows', 'conveyor.md'))
+  cpSync(join(SOURCE_TOOL, 'templates', 'workflow.md'), join(target, '.agents', 'workflows', 'conveyor.md'))
 
   const agents = join(target, 'AGENTS.md')
-  write(agents, upsert(read(agents), MARK, read(join(TOOL, 'templates', 'AGENTS.section.md'))))
+  write(agents, upsert(read(agents), MARK, read(join(SOURCE_TOOL, 'templates', 'AGENTS.section.md'))))
   const claude = join(target, 'CLAUDE.md')
   if (!/^@AGENTS\.md\s*$/m.test(read(claude))) write(claude, upsert(read(claude), MARK, '@AGENTS.md'))
   const ignore = join(target, '.gitignore')
@@ -548,16 +556,38 @@ function setup() {
 
 // ── plan ────────────────────────────────────────────────────────────────────────────────────────
 
+// The accounts a run works with, and those that may stand in for them when they run out of quota:
+// - named in the plan command (--accounts a,b), or for the session (session a b): exactly those, with
+//   stand-ins only when the owner said so (--spares);
+// - a number (--crew N, or "crew" in the config): the first N, the others standing in when "spares";
+// - neither: the owner is asked, with the accounts listed.
+function crewFor(config, size, named, spares) {
+  const others = ids => config.tabs.map(t => t.id).filter(id => !ids.includes(id))
+  const byName = (names, allowSpares, where) => {
+    const { ids, problems } = pickAccounts(config.tabs, names)
+    if (problems.length) stop(`${where}: ${problems.join('; ')}. The working accounts:\n${accountList(config)}`)
+    return { ids, spareIds: allowSpares ? others(ids) : [] }
+  }
+  if (named) return byName(named, spares, '--accounts')
+  const n = size ?? (loadSession() ? null : config.crew)
+  if (n !== null) {
+    if (!(n >= 1 && n <= config.tabs.length)) stop(`a crew of ${n}: there are ${config.tabs.length} working accounts, so 1 to ${config.tabs.length}`)
+    if (config.crews && !config.crews.includes(n)) stop(`a crew of ${n} is not one of the sizes in conveyor.config.json: ${config.crews.join(', ')}`)
+    const ids = config.tabs.slice(0, n).map(t => t.id)
+    return { ids, spareIds: config.spares ? others(ids) : [] }
+  }
+  const chosen = loadSession()
+  if (chosen) return byName(chosen.accounts, chosen.spares, 'the session\'s accounts (run session again)')
+  console.log(`The working accounts:\n${accountList(config)}`)
+  done(`ASK — ask the owner which working accounts this session uses: how many, and which (a part of the email is enough). Then run ${CMD} session <name> <name> … and ${CMD} plan again`, 5)
+}
+
 async function plan(argv) {
   const { config, guard, windowMs } = project()
-  const { crew: asked, rest: args } = readCrewArg(argv)
-  const size = asked ?? config.crew
-  const sizes = config.crews.join(', ')
-  if (size === null) {
-    done(`ASK — ask the owner how many working accounts this run uses: ${sizes}. Then run ${CMD} plan --crew <N>`, 5)
-  }
-  if (!config.crews.includes(size)) stop(`a crew of ${size} is not one of the sizes in conveyor.config.json: ${sizes}`)
-  const crew = config.tabs.slice(0, size)
+  const { crew: asked, accounts: named, rest: args } = readCrewArg(argv)
+  const { ids, spareIds } = crewFor(config, asked, named, argv.includes('--spares'))
+  const crew = ids.map(id => config.tabs.find(t => t.id === id))
+  const size = crew.length
   if (args.length) write(FILES.task, args.join(' ') + '\n')
   const task = read(FILES.task).trim()
   if (!task) stop(`no task: write it into conveyor/run/TASK.md, or pass it: ${CMD} plan "<task>"`)
@@ -574,10 +604,9 @@ async function plan(argv) {
   mkdirSync(OUT, { recursive: true })
   mkdirSync(INBOX, { recursive: true })
   const base = git('rev-parse', 'HEAD').trim()
-  saveState({ task, base, crew: size, startedAt: new Date().toISOString() })
-  history('start', { task, crew: size })
+  saveState({ task, base, crew: size, crewIds: ids, spareIds, startedAt: new Date().toISOString() })
+  history('start', { task, crew: size, accounts: ids })
 
-  const ids = crew.map(t => t.id)
   const tabSections = crew.map((tab, i) => i === 0
     ? `## PROMPT_FOR_${tab.id}\nWEIGHT: normal\nATTACH: path/one, path/two\n\n<A complete brief for a model that cannot see the project: what to build, the exact names,\nprops and data shapes, where it is used, what must not change, the conventions that matter here.\nThe program pastes the ATTACHed files and the answer format in after this text.>`
     : `## PROMPT_FOR_${tab.id}\nNONE`).join('\n\n')
@@ -661,7 +690,7 @@ ${map}
   })
   let quota = loadQuota()
   const view = quotaView(quota, Date.now(), { ids: allIds, budget: config.quota.budget, windowMs })
-  const routes = assignTabs(briefs, view, ids, config.spares ? allIds.slice(size) : [])
+  const routes = assignTabs(briefs, view, ids, spareIds)
   const sentTo = {}
   const lines = []
   for (const brief of briefs) {
@@ -693,7 +722,7 @@ ${map}
   saveQuota(quota)
   saveState({ routes })
 
-  console.log(`\nPlan: ${p.title}  (crew of ${size}; review: ${p.review || 'deep'})`)
+  console.log(`\nPlan: ${p.title}  (crew of ${size}: ${ids.join(', ')}; review: ${p.review || 'deep'})`)
   if (!lines.length) done(`NEXT — no tabs this time: do INSTRUCTIONS_FOR_FLASH, then ${CMD} diff`)
   console.log(`Where each prompt goes:\n${lines.join('\n')}`)
   done(`NEXT — send each prompt where it says (a tab, or write the answer yourself in the same format); save each whole answer under the prompt's name, as conveyor/run/inbox/<name>.md (${slug(briefs[0].id)}.prompt.md → ${slug(briefs[0].id)}.md), then ${CMD} apply`)
@@ -886,7 +915,7 @@ function prereview(args) {
     skip('the change holds a file or a line that may be a secret, and that is never pasted into a chat')
   }
   if (size > max) files = null
-  const pool = (config.spares ? config.tabs : config.tabs.slice(0, state.crew)).map(t => t.id)
+  const pool = state.crewIds ? [...state.crewIds, ...(state.spareIds || [])] : config.tabs.slice(0, state.crew).map(t => t.id)
   const coders = Object.values(state.routes || {}).filter(r => r.route === 'TAB').map(r => r.tab)
   let quota = loadQuota()
   const view = quotaView(quota, Date.now(), { ids: pool, budget: config.quota.budget, windowMs })
@@ -1135,16 +1164,51 @@ function accounts(args) {
 
   const raw = JSON.parse(read(FILES.config))
   const tabs = emails.map((_, i) => ({ id: `ARGON_${i + 1}`, model: raw.tabs?.[i]?.model || DEFAULTS.tabs[0].model }))
-  const kept = (raw.crews ?? DEFAULTS.crews).filter(n => n <= tabs.length)
-  const crews = kept.length ? kept : [tabs.length]
-  const crew = crews.includes(raw.crew) ? raw.crew : null
+  const kept = Array.isArray(raw.crews) ? raw.crews.filter(n => n <= tabs.length) : null
+  const crews = kept?.length ? kept : null
+  const crew = raw.crew !== null && raw.crew <= tabs.length && (!crews || crews.includes(raw.crew)) ? raw.crew ?? null : null
   write(FILES.accounts, JSON.stringify({ accounts: emails }, null, 2) + '\n')
   write(FILES.config, JSON.stringify({ ...raw, tabs, crews, crew }, null, 2) + '\n')
   console.log(tabs.map((t, i) => `  ${t.id}  ${emails[i]}`).join('\n'))
   if (git('ls-files', 'conveyor/accounts.local.json').trim()) {
     stop('conveyor/accounts.local.json is tracked by git, so the emails would be published: git rm --cached conveyor/accounts.local.json, and check that .gitignore has the conveyor block (init adds it)')
   }
-  done(`ACCOUNTS — ${tabs.length} working accounts saved in conveyor/accounts.local.json, which git ignores; crews ${crews.join(', ')}. Commit conveyor/conveyor.config.json (it holds no emails) before the next run`)
+  rmSync(FILES.session, { force: true })
+  done(`ACCOUNTS — ${tabs.length} working accounts saved in conveyor/accounts.local.json, which git ignores; a run uses ${crews ? crews.join(' or ') : `any 1 to ${tabs.length}`} of them. Commit conveyor/conveyor.config.json (it holds no emails) before the next run`)
+}
+
+// ── session ─────────────────────────────────────────────────────────────────────────────────────
+
+const loadSession = () => json(FILES.session, null)
+const accountList = config => config.tabs.map(t => `  ${t.id}  ${tabLabel(t)}`).join('\n')
+
+// The working accounts this session — one Antigravity conversation — uses, as the owner names them:
+// session aliseevna meloman. A part of the email, the whole email, ARGON_3 or 3 all name one. The
+// others stay untouched unless --spares lets them stand in for these when they run out of quota.
+// Without names, shows the choice; --clear forgets it, so the next run asks.
+function session(args) {
+  const { config } = project()
+  if (args.includes('--clear')) {
+    rmSync(FILES.session, { force: true })
+    done('SESSION — cleared: the next run asks which accounts to use')
+  }
+  const names = args.filter(a => !a.startsWith('--'))
+  if (!names.length) {
+    const chosen = loadSession()
+    console.log(`The working accounts:\n${accountList(config)}`)
+    done(chosen ? `SESSION — ${chosen.accounts.join(', ')}${chosen.spares ? ', the others standing in' : ''}` : 'SESSION — none chosen: the next run asks')
+  }
+  const { ids, problems } = pickAccounts(config.tabs, names)
+  if (problems.length) {
+    console.log(`The working accounts:\n${accountList(config)}`)
+    stop(`${problems.join('; ')} — ask the owner, then run session again`)
+  }
+  const spares = args.includes('--spares')
+  write(FILES.session, JSON.stringify({ accounts: ids, spares, at: new Date().toISOString() }, null, 2) + '\n')
+  const tabs = ids.map(id => config.tabs.find(t => t.id === id))
+  console.log(`This session works with:\n${tabs.map(t => `  ${t.id}  ${tabLabel(t)}`).join('\n')}`)
+  console.log(spares ? 'The other accounts stand in when these run out of quota.' : 'The other accounts stay untouched.')
+  done(`SESSION — ${ids.length} account(s): ${ids.join(', ')}. Next: ${CMD} plan`)
 }
 
 // ── status / abort ──────────────────────────────────────────────────────────────────────────────
@@ -1196,7 +1260,10 @@ async function status(args) {
   saveQuota(quota)
 
   const view = quotaView(quota, now, { ids, budget: config.quota.budget, windowMs })
-  console.log(`Crews: ${config.crews.map(n => `${n} (${ids[0]}…${ids[n - 1]})`).join(' · ')}${config.crew ? ` — fixed at ${config.crew}` : ' — asked every run'}\n`)
+  const chosen = loadSession()
+  console.log(chosen
+    ? `This session: ${chosen.accounts.join(', ')}${chosen.spares ? ', the others standing in' : ', the others untouched'} (session --clear to choose again)\n`
+    : `This session: no accounts chosen yet — the next run asks${config.crew ? ` (or takes the first ${config.crew}, as the config fixes)` : ''}\n`)
   console.log(`Working accounts, counted by the conveyor over the last ${config.quota.windowHours} hours:`)
   for (const tab of config.tabs) {
     const v = view[tab.id]
@@ -1204,7 +1271,7 @@ async function status(args) {
       ? 'takes prompts'
       : `held back until ${clock(v.freesAt)}: its briefs go to another tab in the crew, a spare, or the conductor`}`)
   }
-  console.log(config.spares ? 'Accounts outside the crew are spares: they stand in for a crew tab with no room left.' : 'Spares are off: accounts outside the crew are never used.')
+  console.log(chosen ? '' : config.spares ? 'With --crew N, the accounts outside the crew stand in for a crew tab with no room left.' : 'Spares are off: accounts outside the crew are never used.')
   console.log('\nThe conductor itself: when Antigravity\'s View Usage shows 30% or less of the Gemini five-hour')
   console.log('limit left, it does this run\'s work on a Claude model.')
   const runs = read(FILES.history).trim().split('\n').filter(Boolean).slice(-5).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
@@ -1235,7 +1302,8 @@ ${INSTALLED ? `In this project:  ${CMD} <command>` : 'From this repository:  nod
 
   init [dir]   install into a project            doctor    what is ready and what is missing
   setup        install ECC for Antigravity        status    Claude's limits, each tab's quota; --block/--unblock/--reset <TAB>
-  plan --crew N Claude plans for N accounts        apply     write the files from the tabs' answers
+  session …    the accounts for this session     plan      Claude plans (--accounts a,b or --crew N to override)
+  apply        write the files from the tabs' answers
   diff         checks + the diff for review       prereview a free account reads the diff first; --skip
   review       Claude reviews and gives a verdict ship      checks, commit, push, deploy
   abort        put the run's changes aside
@@ -1245,7 +1313,7 @@ README.md explains everything.`)
 }
 
 const [command, ...args] = process.argv.slice(2)
-const commands = { init, doctor, setup, plan, apply, diff, prereview, review, ship, status, accounts, abort, help, '--help': help, '-h': help }
+const commands = { init, doctor, setup, session, plan, apply, diff, prereview, review, ship, status, accounts, abort, help, '--help': help, '-h': help }
 if (command === '--version' || command === 'version') {
   console.log(VERSION)
 } else if (!commands[command]) {

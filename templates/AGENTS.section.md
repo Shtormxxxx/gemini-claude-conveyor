@@ -8,7 +8,7 @@ guide is `conveyor/README.md`.
 | Role | Who | Does |
 |---|---|---|
 | Architect | Claude, run headless by `conveyor plan` | reads only what the task needs and writes `conveyor/run/CONVEYOR_PLAN.md`: a brief for each tab, the wiring for the conductor, and whether the review must be deep. Writes no long code. |
-| Coders | the crew for this run: 4 or 8 working accounts, Gemini in the owner's Chrome (`tabs`, `crews` in the config) | answer `conveyor/run/out/<name>.prompt.md` with whole files |
+| Coders | the working accounts the owner chose for this session — any number, by name — Gemini in the owner's Chrome | answer `conveyor/run/out/<name>.prompt.md` with whole files |
 | Pre-reviewer | a working account that wrote none of the run, through `conveyor prereview` | reads the diff first and sends back whole corrected files for what is plainly wrong |
 | Conductor | Antigravity, with @browser | carries prompts and answers, runs every command, wires imports, fixes small build errors |
 | Reviewer | Claude, run headless by `conveyor review` | reads the diff in `conveyor/run/FOR_REVIEW.md` (a second review: only what changed), fixes with small edits, writes `VERDICT:` |
@@ -30,11 +30,15 @@ What the program enforces, so no agent has to remember it:
   git-ignored `conveyor/accounts.local.json` — never write them into a tracked file — and never trusted by
   their /u/N/ position in Chrome, which shifts when accounts sign in or out. Before sending to a tab,
   the conductor checks the email in its account menu; a tab whose account is missing is blocked.
-- The crew: each run uses the first N working accounts, N chosen at the start (`plan --crew N`, one of
-  "crews"); the plan splits the work over up to N tabs that work at the same time.
+- The crew: at the first `/conveyor` of each conversation the owner chooses which working accounts
+  this session uses — any number, named loosely and matched to emails — and the conductor records it
+  with `node conveyor/bin/conveyor.mjs session <email> …`; `plan` works with exactly those, the plan
+  splits the work over up to that many tabs, and the other accounts stay untouched unless the owner
+  allowed them to stand in (`--spares`). `plan --crew N` (the first N) and `plan --accounts a,b`
+  override it for one run.
 - The quota guard: each tab gets `quota.budget` heavy requests per `quota.windowHours` (about 70–75%
   of its real limit). A tab past it is held back and its briefs go to the crew tab with the most room,
-  then to a spare (an account outside the crew); when none has room, to the conductor's fast model,
+  then to a spare (an account outside the crew, when allowed); when none has room, to the conductor's fast model,
   and briefs marked `WEIGHT: heavy` to a Claude model in Antigravity, which has its own limit.
 - Claude's own limits: before and after each plan and review the program reads the real five-hour and
   weekly use from Claude Code. The main model (`claude.model`) works while they allow; the economy

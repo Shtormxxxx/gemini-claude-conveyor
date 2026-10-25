@@ -115,7 +115,7 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'nope']).out), /STOP — not an email: nope/)
     assert.match(lastLine(conveyor(['accounts', 'w1@example.com', 'W1@example.com']).out), /STOP — the same account twice/)
     const emails = Array.from({ length: 8 }, (_, i) => `w${i + 1}@example.com`)
-    assert.match(lastLine(conveyor(['accounts', ...emails]).out), /ACCOUNTS — 8 working accounts saved in conveyor\/accounts\.local\.json, which git ignores; crews 4, 8/)
+    assert.match(lastLine(conveyor(['accounts', ...emails]).out), /ACCOUNTS — 8 working accounts saved in conveyor\/accounts\.local\.json, which git ignores; a run uses any 1 to 8 of them/)
     // The emails stay on this machine: the config that goes to git holds only the tabs.
     assert.deepEqual(JSON.parse(readFileSync(join(project, 'conveyor/accounts.local.json'), 'utf8')).accounts, emails)
     assert.doesNotMatch(readFileSync(configPath, 'utf8'), /@example\.com/)
@@ -124,11 +124,19 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     git(project, 'commit', '-qm', 'accounts')
     assert.match(conveyor(['doctor']).out, /8 working accounts, each named by its email/)
 
-    // The crew is asked before anything else, and must be one of the configured sizes.
+    // Which accounts a session uses is asked before anything else, with the accounts listed.
     const asked = conveyor(['plan', 'Greet people'])
-    assert.match(lastLine(asked.out), /ASK — ask the owner how many working accounts this run uses: 4, 8\./)
+    assert.match(lastLine(asked.out), /ASK — ask the owner which working accounts this session uses/)
+    assert.match(asked.out, /ARGON_5 {2}w5@example\.com/)
     assert.equal(asked.code, 5)
-    assert.match(lastLine(conveyor(['plan', '--crew', '5', 'Greet people']).out), /STOP — a crew of 5 is not one of the sizes/)
+    assert.match(lastLine(conveyor(['plan', '--crew', '9', 'Greet people']).out), /STOP — a crew of 9: there are 8 working accounts/)
+    // The owner names them loosely; what fits two or none goes back to the owner.
+    assert.match(lastLine(conveyor(['session', 'w']).out), /STOP — "w" fits w1@example\.com, .* — which one\?/)
+    assert.match(lastLine(conveyor(['session', 'nobody']).out), /STOP — "nobody" fits no working account/)
+    const chosen = conveyor(['session', 'W2', 'w5@example.com'])
+    assert.match(lastLine(chosen.out), /SESSION — 2 account\(s\): ARGON_2, ARGON_5/)
+    assert.match(chosen.out, /The other accounts stay untouched/)
+    assert.match(conveyor(['status']).out, /This session: ARGON_2, ARGON_5, the others untouched/)
 
     // A run starts only from a clean folder.
     writeFileSync(join(project, 'stray.txt'), 'x')
@@ -161,7 +169,7 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     assert.equal(flag(probe, '--tools'), '')
     assert.notEqual(resolve(probe.cwd), resolve(project))
 
-    assert.match(planned.out, /crew of 4; review: standard/)
+    assert.match(planned.out, /crew of 4: ARGON_1, ARGON_2, ARGON_3, ARGON_4; review: standard/)
     assert.match(planned.out, /argon-1\.prompt\.md → ARGON_1, w1@example\.com: https:\/\/gemini\.google\.com\/app\?authuser=w1%40example\.com/)
     const prompt = readFileSync(join(project, 'conveyor/run/out/argon-1.prompt.md'), 'utf8')
     assert.match(prompt, /demo: React \+ Vite/)
@@ -300,6 +308,22 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     assert.ok(!existsSync(join(project, 'conveyor/run/out/prereview.prompt.md')))
     conveyor(['abort'])
 
+    // A plan with no --crew works with the session's accounts and no others: with both out of room,
+    // the conductor writes, though six more accounts have room.
+    const two = conveyor(['plan', 'Greet in pairs'])
+    assert.match(two.out, /crew of 2: ARGON_2, ARGON_5/)
+    assert.match(lastCall(log, 'architect').input, /2 browser tabs \(ARGON_2, ARGON_5\)/)
+    // ARGON_2 did the pre-review earlier, so ARGON_5 has more room.
+    assert.match(two.out, /argon-1\.prompt\.md → ARGON_5, w5@example\.com: .*moved from ARGON_1\]/)
+    conveyor(['status', '--block', 'ARGON_2', '--block', 'ARGON_5'])
+    assert.match(conveyor(['plan', 'Greet in pairs']).out, /argon-1\.prompt\.md → YOU, on your fast Gemini model/)
+    conveyor(['status', '--unblock', 'ARGON_2', '--unblock', 'ARGON_5'])
+    // One account, by number, for a plan of its own; then the session is forgotten and asked again.
+    assert.match(conveyor(['plan', '--accounts', '7', 'Greet alone']).out, /crew of 1: ARGON_7/)
+    assert.match(lastLine(conveyor(['session', '--clear']).out), /SESSION — cleared/)
+    assert.match(lastLine(conveyor(['plan', 'Greet again']).out), /ASK/)
+    conveyor(['abort'])
+
     // Claude's limits pick the model: from 50% of the five-hour limit the economy model plans too;
     // near the top no step starts; a refusal of Opus alone moves the next steps to Sonnet.
     assert.match(conveyor(['plan', '--crew', '4', 'Greet again'], { STUB_FIVE: '60' }).out,
@@ -315,11 +339,11 @@ test('a whole run, and every gate on the way', { timeout: 300_000 }, () => {
     // blocked, to a spare outside it; with every account blocked, to the conductor.
     const blocked = conveyor(['status', '--block', 'argon_1'])
     assert.match(lastLine(blocked.out), /7 of 8 tabs take prompts/)
-    assert.match(blocked.out, /Crews: 4 \(ARGON_1…ARGON_4\) · 8 \(ARGON_1…ARGON_8\) — asked every run/)
+    assert.match(blocked.out, /This session: no accounts chosen yet — the next run asks/)
     // ARGON_2 did the pre-review, so ARGON_3 has the most room.
     assert.match(conveyor(['plan', '--crew', '4', 'Greet again']).out, /argon-1\.prompt\.md → ARGON_3, w3@example\.com: .*moved from ARGON_1\]/)
     conveyor(['status', '--block', 'ARGON_2', '--block', 'ARGON_3', '--block', 'ARGON_4'])
-    assert.match(conveyor(['plan', '--crew', '4', 'Greet again']).out, /argon-1\.prompt\.md → ARGON_5, w5@example\.com: .*moved from ARGON_1 — a spare account, outside the crew/)
+    assert.match(conveyor(['plan', '--crew', '4', 'Greet again']).out, /argon-1\.prompt\.md → ARGON_6, w6@example\.com: .*moved from ARGON_1 — a spare account, outside the crew/)
     conveyor(['status', '--block', 'ARGON_5', '--block', 'ARGON_6', '--block', 'ARGON_7', '--block', 'ARGON_8'])
     assert.match(conveyor(['plan', '--crew', '4', 'Greet again']).out, /argon-1\.prompt\.md → YOU, on your fast Gemini model/)
     const unblock = Array.from({ length: 8 }, (_, i) => ['--unblock', `ARGON_${i + 1}`]).flat()
@@ -370,7 +394,7 @@ test('the source checkout only installs, and says how; an update keeps what the 
     assert.match(lastLine(updated.out), /UPDATED to \d+\.\d+\.\d+ — commit the changes/)
     const v11 = JSON.parse(readFileSync(configPath, 'utf8'))
     assert.equal(v11.tabs.length, 8)
-    assert.deepEqual(v11.crews, [4, 8])
+    assert.equal(v11.crews, null)
     assert.equal(v11.project, 'Kept as the owner wrote it.')
 
     // A 1.2 config with the emails in it: updating moves them out of git's reach.
@@ -399,6 +423,11 @@ test('the source checkout only installs, and says how; an update keeps what the 
     assert.equal(v15.prereview.enabled, true)
     assert.deepEqual(v15.quota, { budget: 15, windowHours: 5 })
     assert.doesNotMatch(init('--force').out, /settings are in/)
+
+    // The update as the README gives it: from inside the project, pointing at the clone.
+    const inside = sh(repo, process.execPath, [join(REPO, 'bin', 'conveyor.mjs'), 'init', '.', '--no-ecc', '--force'])
+    assert.match(lastLine(inside.out), /UPDATED to \d+\.\d+\.\d+/, inside.out)
+    assert.equal(readFileSync(join(repo, '.agents', 'workflows', 'conveyor.md'), 'utf8'), readFileSync(join(REPO, 'templates', 'workflow.md'), 'utf8'))
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

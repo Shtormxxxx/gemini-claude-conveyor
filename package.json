@@ -1,6 +1,6 @@
 {
   "name": "gemini-claude-conveyor",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Конвейер задач для Gemini Pro и Claude Pro: один запрос в Antigravity → план (Claude) → код (вкладки Gemini) → проверки → ревью (Claude) → выкладка.",
   "type": "module",
   "bin": { "conveyor": "bin/conveyor.mjs" },

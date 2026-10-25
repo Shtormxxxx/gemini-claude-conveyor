@@ -12,19 +12,18 @@ test('an empty config is the defaults, with no problems', () => {
   assert.deepEqual(config, DEFAULTS)
 })
 
-test('the default team is eight working accounts, run as a crew of 4 or 8, asked every run', () => {
+test('the default team is eight working accounts, any number of them per run, asked every session', () => {
   const { config } = readConfig('')
   assert.equal(config.tabs.length, 8)
   assert.deepEqual(config.tabs.map(t => t.url.match(/\/u\/(\d)\//)[1]), ['1', '2', '3', '4', '5', '6', '7', '8'])
-  assert.deepEqual(config.crews, [4, 8])
+  assert.equal(config.crews, null)
   assert.equal(config.crew, null)
 })
 
 test('a config from before crews keeps working with the tabs it has', () => {
   const two = [{ id: 'ARGON_1', url: 'https://gemini.google.com/u/1/app' }, { id: 'ARGON_2', url: 'https://gemini.google.com/u/2/app' }]
-  assert.deepEqual(readConfig(JSON.stringify({ tabs: two })).config.crews, [2])
-  const five = Array.from({ length: 5 }, (_, i) => ({ id: `T_${i}`, url: 'https://x' }))
-  assert.deepEqual(readConfig(JSON.stringify({ tabs: five })).config.crews, [4])
+  assert.deepEqual(readConfig(JSON.stringify({ tabs: two })).problems, [])
+  assert.equal(readConfig(JSON.stringify({ tabs: two, crew: 2 })).config.crew, 2)
 })
 
 test('tabs are named by email or given a url; one account never backs two tabs', () => {
@@ -54,8 +53,10 @@ test('the local emails name the tabs in order, and must fit them', () => {
 test('crew sizes must fit the tabs, and a fixed crew must be one of them', () => {
   const tabs = Array.from({ length: 10 }, (_, i) => ({ id: `ARGON_${i + 1}`, url: `https://gemini.google.com/u/${i + 1}/app` }))
   assert.deepEqual(readConfig(JSON.stringify({ tabs, crews: [5, 10], crew: 10 })).problems, [])
+  assert.deepEqual(readConfig(JSON.stringify({ crew: 5 })).problems, [])
   assert.match(readConfig(JSON.stringify({ crews: [4, 12] })).problems.join(), /between 1 and 8/)
-  assert.match(readConfig(JSON.stringify({ crew: 5 })).problems.join(), /"crew" must be null/)
+  assert.match(readConfig(JSON.stringify({ crews: [4, 8], crew: 5 })).problems.join(), /"crew" must be null \(ask\) or a size from 1 to 8 listed in "crews"/)
+  assert.match(readConfig(JSON.stringify({ crew: 9 })).problems.join(), /"crew" must be null/)
 })
 
 test('a partial config keeps the defaults it does not mention', () => {
